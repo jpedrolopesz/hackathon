@@ -57,7 +57,7 @@ const apiStack = new ApiStack(app, `Api${suffix}`, {
   recordingsBucket: storageStack.recordingsBucket,
   mediaDistributionDomainName: storageStack.mediaDistribution.distributionDomainName,
   cloudFrontPublicKeyId: storageStack.signingPublicKey.publicKeyId,
-  cloudFrontSigningSecretArn: storageStack.signingPrivateKeySecret.secretArn,
+  cloudFrontSigningSecret: storageStack.signingPrivateKeySecret,
 });
 
 for (const stack of [

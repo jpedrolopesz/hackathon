@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { NotFoundError } from '@/domain/errors/NotFoundError';
+import { ServiceUnavailableError } from '@/domain/errors/ServiceUnavailableError';
 import { ValidationError } from '@/domain/errors/ValidationError';
 import { toErrorResponseBody } from '@/shared/http/toErrorResponseBody';
 
@@ -9,6 +10,15 @@ describe('toErrorResponseBody', () => {
     expect(status).toBe(404);
     expect(body.error.code).toBe('NOT_FOUND');
     expect(body.error.requestId).toBe('req-1');
+  });
+
+  it('maps ServiceUnavailableError (IVS throttling) to 503, never 500', () => {
+    const { status, body } = toErrorResponseBody(
+      new ServiceUnavailableError('Tente novamente em instantes.'),
+      'req-throttled',
+    );
+    expect(status).toBe(503);
+    expect(body.error.code).toBe('SERVICE_UNAVAILABLE');
   });
 
   it('includes validation details when present', () => {

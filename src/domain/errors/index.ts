@@ -5,3 +5,4 @@ export { UnauthorizedError } from './UnauthorizedError';
 export { ConflictError } from './ConflictError';
 export { ValidationError } from './ValidationError';
 export type { ValidationIssue } from './ValidationError';
+export { ServiceUnavailableError } from './ServiceUnavailableError';

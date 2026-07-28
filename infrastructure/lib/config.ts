@@ -16,6 +16,13 @@ export interface EnvironmentConfig {
    * justificativa do valor de produção (16).
    */
   readonly chatShardCount: number;
+  /**
+   * Throttle da rota `reaction.send` no próprio API Gateway WebSocket (não é um limite
+   * por usuário — é agregado, para toda a API, nesta rota; ver docs/fase-1-
+   * arquitetura.md, seção 10.4/10.7 para o porquê de reação não usar mais o rate
+   * limiter em DynamoDB).
+   */
+  readonly reactionRouteThrottle: { readonly rateLimit: number; readonly burstLimit: number };
 }
 
 const ENVIRONMENT_CONFIGS: Record<EnvironmentName, EnvironmentConfig> = {
@@ -25,6 +32,7 @@ const ENVIRONMENT_CONFIGS: Record<EnvironmentName, EnvironmentConfig> = {
     pointInTimeRecovery: false,
     logRetention: RetentionDays.ONE_WEEK,
     chatShardCount: 2,
+    reactionRouteThrottle: { rateLimit: 10, burstLimit: 20 },
   },
   staging: {
     envName: 'staging',
@@ -32,6 +40,7 @@ const ENVIRONMENT_CONFIGS: Record<EnvironmentName, EnvironmentConfig> = {
     pointInTimeRecovery: true,
     logRetention: RetentionDays.ONE_MONTH,
     chatShardCount: 4,
+    reactionRouteThrottle: { rateLimit: 100, burstLimit: 200 },
   },
   production: {
     envName: 'production',
@@ -39,6 +48,7 @@ const ENVIRONMENT_CONFIGS: Record<EnvironmentName, EnvironmentConfig> = {
     pointInTimeRecovery: true,
     logRetention: RetentionDays.SIX_MONTHS,
     chatShardCount: 16,
+    reactionRouteThrottle: { rateLimit: 300, burstLimit: 600 },
   },
 };
 

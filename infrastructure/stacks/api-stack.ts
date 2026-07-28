@@ -1,6 +1,8 @@
 import * as path from 'node:path';
 import { Duration, Fn, Stack } from 'aws-cdk-lib';
+import { AccessLogField, AccessLogFormat } from 'aws-cdk-lib/aws-apigateway';
 import * as apigwv2 from 'aws-cdk-lib/aws-apigatewayv2';
+import { WebSocketLambdaAuthorizer } from 'aws-cdk-lib/aws-apigatewayv2-authorizers';
 import {
   HttpLambdaIntegration,
   WebSocketLambdaIntegration,
@@ -13,7 +15,9 @@ import type * as events from 'aws-cdk-lib/aws-events';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as lambdaNodejs from 'aws-cdk-lib/aws-lambda-nodejs';
+import * as logs from 'aws-cdk-lib/aws-logs';
 import type * as s3 from 'aws-cdk-lib/aws-s3';
+import type * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import type { Construct } from 'constructs';
 import type { PlatformStackProps } from '../lib/config';
 
@@ -25,7 +29,7 @@ export interface ApiStackProps extends PlatformStackProps {
   readonly recordingsBucket: s3.IBucket;
   readonly mediaDistributionDomainName: string;
   readonly cloudFrontPublicKeyId: string;
-  readonly cloudFrontSigningSecretArn: string;
+  readonly cloudFrontSigningSecret: secretsmanager.ISecret;
 }
 
 /**
@@ -51,11 +55,52 @@ export class ApiStack extends Stack {
 
     this.webSocketApi = new apigwv2.WebSocketApi(this, 'RealtimeApi');
 
+    // Access log próprio (docs/fase-1-arquitetura.md, seção 10.1/10.8) com o mesmo
+    // conjunto de campos do `defaultAccessLogFormat()` do CDK (montado aqui à mão só
+    // porque esse helper é um método de instância e a stage ainda não existe neste
+    // ponto): identidade de conexão, rota e status — nenhum campo com query string ou
+    // corpo da mensagem. Isso é cinto e suspensório: mesmo o connectionToken (60s, uso
+    // único) não deveria aparecer em log nenhum.
+    //
+    // Diferente de REST API (v1), HTTP/WebSocket API (v2) não usa a conta-a-conta
+    // `cloudWatchRoleArn` — API Gateway v2 entrega os logs via o mecanismo gerenciado
+    // de "Log Delivery" da AWS (confirmado na doc de logging de HTTP API: a lista de
+    // permissões ali, `logs:CreateLogDelivery`/`PutResourcePolicy`/etc., é do
+    // principal que FAZ O DEPLOY, não algo que este stack precisa provisionar).
+    // Prerequisito operacional, não uma lacuna de código: quem faz `cdk deploy`
+    // precisa dessas permissões na própria conta.
+    const webSocketAccessLogGroup = new logs.LogGroup(this, 'RealtimeApiAccessLogs', {
+      retention: props.config.logRetention,
+      removalPolicy: props.config.removalPolicy,
+    });
+    const webSocketAccessLogFormat = new AccessLogFormat(
+      [
+        AccessLogField.contextIdentitySourceIp(),
+        AccessLogField.contextIdentityCaller(),
+        AccessLogField.contextIdentityUser(),
+        `[${AccessLogField.contextRequestTime()}]`,
+        `"${AccessLogField.contextEventType()} ${AccessLogField.contextRouteKey()} ${AccessLogField.contextConnectionId()}"`,
+        AccessLogField.contextStatus(),
+        AccessLogField.contextRequestId(),
+      ].join(' '),
+    );
+
     this.webSocketStage = new apigwv2.WebSocketStage(this, 'RealtimeApiStage', {
       webSocketApi: this.webSocketApi,
       stageName: props.config.envName,
       autoDeploy: true,
+      detailedMetricsEnabled: true,
+      accessLogSettings: {
+        destination: new apigwv2.LogGroupLogDestination(webSocketAccessLogGroup),
+        format: webSocketAccessLogFormat,
+      },
     });
+
+    // `dataTraceEnabled: false` explícito — logging de execução com trace de dados
+    // registra o payload inteiro da requisição (incluindo query string), e nunca deve
+    // ser ligado aqui.
+    const webSocketCfnStage = this.webSocketStage.node.defaultChild as apigwv2.CfnStage;
+    webSocketCfnStage.defaultRouteSettings = { dataTraceEnabled: false };
 
     const nextServerFunction = new lambda.Function(this, 'NextServerFunction', {
       runtime: lambda.Runtime.NODEJS_24_X,
@@ -75,7 +120,7 @@ export class ApiStack extends Stack {
         S3_RECORDINGS_BUCKET_NAME: props.recordingsBucket.bucketName,
         CLOUDFRONT_DOMAIN_NAME: props.mediaDistributionDomainName,
         CLOUDFRONT_KEY_PAIR_ID: props.cloudFrontPublicKeyId,
-        CLOUDFRONT_PRIVATE_KEY_SECRET_ARN: props.cloudFrontSigningSecretArn,
+        CLOUDFRONT_PRIVATE_KEY_SECRET_ARN: props.cloudFrontSigningSecret.secretArn,
         EVENTBRIDGE_BUS_NAME: props.appEventBus.eventBusName,
         WEBSOCKET_API_ENDPOINT: this.webSocketStage.callbackUrl,
         LOG_LEVEL: props.config.envName === 'production' ? 'info' : 'debug',
@@ -86,26 +131,48 @@ export class ApiStack extends Stack {
 
     props.table.grantReadWriteData(nextServerFunction);
     this.webSocketStage.grantManagementApiAccess(nextServerFunction);
+    // Assinar URLs de playback do CloudFront (GetRecordingPlaybackUseCase, Fase 7)
+    // precisa ler a chave privada em runtime — nunca em build time (ver
+    // infrastructure/stacks/storage-stack.ts).
+    props.cloudFrontSigningSecret.grantRead(nextServerFunction);
 
-    // Least privilege por conjunto de ações. Resource '*' mantido deliberadamente: a
-    // política de exemplo oficial da AWS (getting-started-iam-permissions.html) usa
-    // "*" para todas estas ações, mesmo as que exigem stageArn como parâmetro
-    // obrigatório — não encontrei confirmação (a Service Authorization Reference é
-    // renderizada por JS e bloqueou todas as tentativas de acesso) de que alguma delas
-    // aceite Resource escopado a uma ARN de stage. Reavaliar manualmente antes de
-    // apertar isso (ver docs/fase-1-arquitetura.md, seção 8).
+    // Confirmado na Service Authorization Reference (list_amazoninteractivevideoservice):
+    // todas estas ações exigem resource type "stage" — Resource "*" da versão anterior
+    // estava mais permissivo do que a API exige. Stage é criado dinamicamente por live
+    // (não em CDK), então o Resource é um wildcard `stage/*`, mas a Condition por tag
+    // `Environment` impede a Lambda desta stack de operar sobre uma stage de outro
+    // ambiente mesmo que o ARN vaze (ex.: logs, erro, engenharia social) — isolamento
+    // real entre development/staging/production, não só por convenção de nomes.
+    const stageResourceArn = `arn:${this.partition}:ivs:${this.region}:${this.account}:stage/*`;
+
     nextServerFunction.addToRolePolicy(
       new iam.PolicyStatement({
-        sid: 'IvsStageControlPlane',
+        sid: 'IvsCreateStage',
+        actions: ['ivs:CreateStage'],
+        resources: [stageResourceArn],
+        // RequestTag (não ResourceTag): a stage ainda não existe no momento da chamada.
+        // Força toda stage criada por esta Lambda a nascer tagueada com o ambiente —
+        // é o que torna a Condition das outras ações (abaixo) efetiva.
+        conditions: {
+          StringEquals: { 'aws:RequestTag/Environment': props.config.envName },
+        },
+      }),
+    );
+
+    nextServerFunction.addToRolePolicy(
+      new iam.PolicyStatement({
+        sid: 'IvsStageOperations',
         actions: [
-          'ivs:CreateStage',
           'ivs:GetStage',
           'ivs:UpdateStage',
           'ivs:DeleteStage',
           'ivs:CreateParticipantToken',
           'ivs:DisconnectParticipant',
         ],
-        resources: ['*'],
+        resources: [stageResourceArn],
+        conditions: {
+          StringEquals: { 'aws:ResourceTag/Environment': props.config.envName },
+        },
       }),
     );
 
@@ -123,6 +190,30 @@ export class ApiStack extends Stack {
         allowedMethods: cloudfront.AllowedMethods.ALLOW_ALL,
       },
     });
+
+    // Lambda authorizer de REQUEST na rota $connect — único mecanismo de JWT para
+    // WebSocket (docs/fase-1-arquitetura.md, seção 10.1; JWT authorizer nativo só
+    // existe para HTTP API). Revisão de segurança pós-Fase-6: não reverifica o access
+    // token do Cognito (que nunca vai na URL) — consome o connectionToken de uso único
+    // emitido por /join e resolve role/institutionId via UserProfile. Não precisa mais
+    // do User Pool/Client do Cognito.
+    const connectAuthorizerHandler = new lambdaNodejs.NodejsFunction(
+      this,
+      'ConnectAuthorizerFunction',
+      {
+        entry: path.join(
+          __dirname,
+          '../../src/infrastructure/lambda-handlers/websocket/authorizer.ts',
+        ),
+        handler: 'handler',
+        runtime: lambda.Runtime.NODEJS_24_X,
+        logRetention: props.config.logRetention,
+        timeout: Duration.seconds(10),
+        environment: {
+          DYNAMODB_TABLE_NAME: props.table.tableName,
+        },
+      },
+    );
 
     const connectHandler = new lambdaNodejs.NodejsFunction(this, 'ConnectFunction', {
       entry: path.join(__dirname, '../../src/infrastructure/lambda-handlers/websocket/connect.ts'),
@@ -154,8 +245,15 @@ export class ApiStack extends Stack {
       environment: {
         DYNAMODB_TABLE_NAME: props.table.tableName,
         CHAT_SHARD_COUNT: String(props.config.chatShardCount),
+        WEBSOCKET_API_ENDPOINT: this.webSocketStage.callbackUrl,
       },
     });
+
+    // O authorizer lê UserProfile e CONSOME o connectionToken (UpdateItem condicional
+    // que marca o ticket como usado) — precisa de escrita na tabela, mas nunca chama
+    // PostToConnection, por isso fica de fora do grant de management API (mesmo
+    // raciocínio de escopo mínimo já aplicado ao IAM do IVS acima).
+    props.table.grantReadWriteData(connectAuthorizerHandler);
 
     for (const handler of [connectHandler, disconnectHandler, defaultHandler]) {
       props.table.grantReadWriteData(handler);
@@ -164,6 +262,13 @@ export class ApiStack extends Stack {
 
     this.webSocketApi.addRoute('$connect', {
       integration: new WebSocketLambdaIntegration('ConnectIntegration', connectHandler),
+      // identitySource explícito: o construtor `WebSocket` do browser não permite
+      // headers customizados, então o connectionToken de uso único (emitido por
+      // /join, nunca o access token do Cognito — docs/fase-1-arquitetura.md, seção
+      // 10.1) vai na query string, não no header Authorization padrão.
+      authorizer: new WebSocketLambdaAuthorizer('ConnectAuthorizer', connectAuthorizerHandler, {
+        identitySource: ['route.request.querystring.ticket'],
+      }),
     });
     this.webSocketApi.addRoute('$disconnect', {
       integration: new WebSocketLambdaIntegration('DisconnectIntegration', disconnectHandler),
@@ -191,6 +296,12 @@ export class ApiStack extends Stack {
       'participant.lowerHand',
       'participant.promote',
       'participant.demote',
+      // `ping`: heartbeat de aplicação — o WebSocket API Gateway fecha conexões
+      // idle após 10min, não ajustável, e não expõe frames de ping/pong nativos
+      // (docs/fase-1-arquitetura.md, seção 10.8). `sync.resume`: retomada de estado
+      // após reconexão (conexão de 2h também é teto rígido — mesma seção).
+      'ping',
+      'sync.resume',
     ];
 
     for (const routeKey of namedRoutes) {
@@ -198,5 +309,18 @@ export class ApiStack extends Stack {
         integration: new WebSocketLambdaIntegration(`${routeKey}Integration`, defaultHandler),
       });
     }
+
+    // Reação não usa mais o rate limiter em DynamoDB (revisão de ponto de revisão —
+    // cada reação era uma escrita, o oposto do que a Fase 1 tinha decidido). A
+    // frequência agora é limitada aqui, no próprio API Gateway — mas é um limite
+    // AGREGADO da rota inteira, não por aluno (docs/fase-1-arquitetura.md, seção
+    // 10.7): protege o backend de um pico, mas não impede sozinho um usuário
+    // individual de consumir mais do que a parte que lhe cabia do orçamento.
+    webSocketCfnStage.routeSettings = {
+      'reaction.send': {
+        throttlingRateLimit: props.config.reactionRouteThrottle.rateLimit,
+        throttlingBurstLimit: props.config.reactionRouteThrottle.burstLimit,
+      },
+    };
   }
 }

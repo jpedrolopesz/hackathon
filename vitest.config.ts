@@ -1,10 +1,13 @@
-import { defineConfig } from 'vitest/config';
+import { configDefaults, defineConfig } from 'vitest/config';
 import { fileURLToPath } from 'node:url';
 
 export default defineConfig({
   test: {
     environment: 'node',
     include: ['tests/**/*.test.ts', 'src/**/*.test.ts'],
+    // Integração roda à parte (precisa de Java + baixa o DynamoDB Local) — ver
+    // vitest.integration.config.ts e `npm run test:integration`.
+    exclude: [...configDefaults.exclude, 'tests/integration/**'],
     coverage: { provider: 'v8', reporter: ['text', 'lcov'] },
   },
   resolve: {

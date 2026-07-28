@@ -54,25 +54,56 @@ export class EventBusStack extends Stack {
         DYNAMODB_TABLE_NAME: props.table.tableName,
         IVS_ENCODER_CONFIGURATION_ARN: props.encoderConfigurationArn,
         IVS_STORAGE_CONFIGURATION_ARN: props.storageConfigurationArn,
+        // Necessário para `tags: { Environment }` em StartComposition — sem isso,
+        // GetComposition/StopComposition falham com AccessDenied (Condition de IAM
+        // abaixo).
+        APP_ENV: props.config.envName,
       },
     });
 
-    // Least privilege por conjunto de ações. Resource '*' mantido deliberadamente: a
-    // política de exemplo oficial da AWS usa "*" para estas ações mesmo StartComposition
-    // exigindo stageArn obrigatório — não consegui confirmar na Service Authorization
-    // Reference (renderizada por JS, bloqueou todas as tentativas de acesso) se alguma
-    // delas aceita Resource escopado. Reavaliar manualmente antes de apertar isso (ver
-    // docs/fase-1-arquitetura.md, seção 8).
+    // Confirmado na Service Authorization Reference: StartComposition exige DOIS
+    // recursos obrigatórios ao mesmo tempo — stage E encoder-configuration (não é só
+    // um "OU" entre eles). StopComposition/GetComposition exigem "composition", não
+    // "stage" — assimetria real, um único statement genérico para "ações de
+    // composição" teria falhado em runtime contra StopComposition/GetComposition.
+    // `ivs:ListCompositions` removido: não estava confirmado na tabela e nenhum fluxo
+    // documentado usa (o status é consultado via GetComposition, não List) — least
+    // privilege por não conceder o que não é usado, não só por escopo de recurso.
+    const stageResourceArn = `arn:${this.partition}:ivs:${this.region}:${this.account}:stage/*`;
+    const compositionResourceArn = `arn:${this.partition}:ivs:${this.region}:${this.account}:composition/*`;
+
     this.ivsEventConsumer.addToRolePolicy(
       new iam.PolicyStatement({
-        sid: 'IvsCompositionControlPlane',
-        actions: [
-          'ivs:StartComposition',
-          'ivs:StopComposition',
-          'ivs:GetComposition',
-          'ivs:ListCompositions',
-        ],
-        resources: ['*'],
+        sid: 'IvsStartComposition',
+        actions: ['ivs:StartComposition'],
+        // Encoder/Storage-Configuration são recursos estáticos desta stack (criados
+        // uma vez, não por live) — ARN concreto, não wildcard, como pedido.
+        resources: [stageResourceArn, props.encoderConfigurationArn, props.storageConfigurationArn],
+        conditions: {
+          StringEquals: {
+            // A stage (e as configs, já tagueadas pelo CDK) precisam já pertencer a
+            // este ambiente...
+            'aws:ResourceTag/Environment': props.config.envName,
+            // ...e a composição criada por esta chamada precisa nascer tagueada com o
+            // mesmo ambiente, para a Condition de GetComposition/StopComposition
+            // (abaixo) funcionar. Depende de Fase 7 passar `tags: { Environment }` na
+            // chamada real de StartComposition — sem isso, GetComposition/
+            // StopComposition falham com AccessDenied (fail-safe: melhor falhar alto
+            // e cedo em teste do que silenciosamente aceitar composições sem tag).
+            'aws:RequestTag/Environment': props.config.envName,
+          },
+        },
+      }),
+    );
+
+    this.ivsEventConsumer.addToRolePolicy(
+      new iam.PolicyStatement({
+        sid: 'IvsCompositionLifecycle',
+        actions: ['ivs:StopComposition', 'ivs:GetComposition'],
+        resources: [compositionResourceArn],
+        conditions: {
+          StringEquals: { 'aws:ResourceTag/Environment': props.config.envName },
+        },
       }),
     );
 

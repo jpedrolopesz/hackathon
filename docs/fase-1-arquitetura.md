@@ -461,12 +461,72 @@ grava uma projeção por aluno matriculado na turma: `PK=USER#{studentId}`,
 `SK=UPCOMING#{scheduledStartAt}#{liveId}`, item pequeno (só os campos exibidos numa
 lista — título, horário, `liveId`). "Próximas lives" vira uma Query de partição única
 com `SK > now`, `Limit` e `LastEvaluatedKey` — paginação por cursor real, sem
-merge de múltiplas fontes. Custo: mais escrita por live criada (uma por aluno
-matriculado — turma de 40 alunos = 40 writes extras, aceitável porque criar uma live é
-raro comparado a listar "minhas próximas aulas", que acontece a cada carregamento do
-painel/app). Cancelamento/reagendamento atualiza ou remove a projeção explicitamente;
-um TTL (`scheduledStartAt` + margem curta) é rede de segurança para projeções órfãs,
-não o mecanismo principal de correção.
+merge de múltiplas fontes.
+
+**O custo real não é só "mais escrita ao criar uma live"** — como `scheduledStartAt`
+faz parte da SK, a projeção nunca é atualizada in-place: qualquer mudança é
+delete+put. Isso cria **quatro caminhos de manutenção**, não um:
+
+| Caminho                                        | Gatilho                              | Ação                                                                                                  | Fase                               |
+| ---------------------------------------------- | ------------------------------------ | ----------------------------------------------------------------------------------------------------- | ---------------------------------- |
+| a) Live reagendada                             | `PATCH /lives/{liveId}` muda horário | Apagar a projeção antiga (SK antiga) e escrever a nova (SK nova), para todos os matriculados na turma | Fase 5 (lives)                     |
+| b) Live cancelada                              | Cancelamento da live                 | Apagar as projeções de todos os matriculados                                                          | Fase 5 (lives)                     |
+| c) Matrícula criada depois da live já agendada | `EnrollStudent`                      | Backfill: criar projeções de todas as lives futuras da turma para esse aluno                          | **Fase 4** (é a própria matrícula) |
+| d) Matrícula cancelada                         | `UnenrollStudent`                    | Apagar as projeções das lives futuras da turma para esse aluno                                        | **Fase 4** (é a própria matrícula) |
+
+(c) e (d) são implementados nesta fase junto com `EnrollStudent`/`UnenrollStudent`
+(`src/application/use-cases/enroll-student.ts`,
+`src/application/use-cases/unenroll-student.ts`) — sem eles, um aluno matriculado
+depois da live já agendada não veria a aula ("aula fantasma" ao contrário: ausente),
+ou um aluno desmatriculado continuaria vendo aulas de uma turma que não frequenta
+mais. (a) e (b) ficam para a Fase 5, quando `LiveSession` existir.
+
+**Escala e idempotência (c/d):** uma turma pode ter mais alunos do que cabe numa
+operação atômica única. `TransactWriteItems` tem limite de 100 itens — mas como cada
+projeção é independente (chave própria, sobrescrita sem efeito colateral) e não há
+necessidade de atomicidade _entre_ itens, a operação real usada é
+`BatchWriteItem` (limite **25** itens e **16 MB** por chamada, não 100 — número
+diferente porque é uma API diferente; `TransactWriteItems` seria mais caro em WCU pelo
+protocolo de duas fases e não compra nada aqui, já que não precisamos de
+tudo-ou-nada). Implementado em
+`src/infrastructure/repositories/dynamodb-upcoming-live-repository.ts`: lotes de até
+25, cada lote reenviando `UnprocessedItems` até esvaziar (o retorno normal de
+`BatchWriteItem` para itens que não couberam no throughput do momento) com **backoff
+exponencial** entre tentativas (50ms, 100ms, 200ms... até 5s) — um loop apertado só
+pioraria o throttling que causou o `UnprocessedItems`. O reenvio em si _é_ o retry
+idempotente pedido, não uma camada extra.
+
+**Duas restrições reais que essa escolha impõe** (não são hipotéticas — são a API):
+
+- `BatchWriteItem` **não aceita `ConditionExpression`**. Se algum dia uma escrita de
+  projeção precisar ser condicional (ex.: "não sobrescrever se já existe uma versão
+  mais nova"), esse caminho específico tem que cair para `PutItem` individual — não dá
+  para expressar a condição dentro de um `BatchWriteItem`. Hoje nenhum dos caminhos
+  (c)/(d) precisa disso (a chave já é determinística e a sobrescrita é sempre segura),
+  mas fica registrado para quando (a) for implementado, abaixo.
+- No caminho **(a)** (live reagendada, Fase 5): como `scheduledStartAt` está na SK, um
+  reagendamento é sempre `DELETE` do item antigo + `PUT` do novo — nunca um `UPDATE`
+  in-place. Os dois **não são atômicos por aluno** dentro do `BatchWriteItem` (cada
+  request do batch — put ou delete — é processado independentemente pela API). Se o
+  delete de um aluno for aplicado e o put falhar (ou vice-versa) antes da
+  reconciliação rodar, esse aluno especificamente fica sem a aula na lista de
+  "próximas lives" até a reconciliação corrigir — um risco concreto, não teórico, que
+  a Fase 5 precisa tratar (ex.: ordenar como put-novo-depois-delete-antigo reduz a
+  janela de "aluno sem nada", ao custo de aceitar brevemente duas entradas para a
+  mesma aula).
+
+**Falha parcial:** se o processo cair no meio do backfill de uma turma grande (alguns
+lotes gravados, outros não), o aluno fica com projeções parciais — não é um estado
+inconsistente _permanente_ porque a operação é idempotente e pode ser reexecutada
+inteira sem duplicar nada (mesma chave = mesmo item). Não implementada agora: uma
+rotina de reconciliação (ex. Lambda agendada) que compare `Enrollment`s ativos contra
+projeções `UPCOMING#` existentes e complete o que faltar — registrado como pendência
+de operação, não como bloqueador da Fase 4.
+
+Cancelamento/reagendamento (a/b, Fase 5) atualiza ou remove a projeção explicitamente;
+um TTL (`scheduledStartAt` + margem curta) é rede de segurança para projeções órfãs
+(ex. um caminho de manutenção que falhou e não foi reconciliado), não o mecanismo
+principal de correção.
 
 ### GSIs resultantes (ainda só três)
 
@@ -544,6 +604,16 @@ tabela inteira).
 **Fechados nesta revisão** (mantidos aqui só como registro, não precisam mais de
 verificação):
 
+- ~~Vazamento de existência via 403 cross-institution~~ — `assertSameInstitution`
+  lançava `ForbiddenError` com código `CROSS_INSTITUTION_ACCESS_DENIED`, que confirma
+  ao atacante que o recurso existe em outra instituição (a própria enumeração que a
+  seção 14 do README proíbe). Corrigido para `NotFoundError` genérico (`404`,
+  `RESOURCE_NOT_FOUND`, mensagem neutra) — byte-a-byte idêntico ao caso "recurso não
+  existe". `assertClassOwner` continua `403`/`CLASS_NOT_OWNED`: dentro da mesma
+  instituição, quem tenta mexer numa turma alheia já sabe legitimamente que ela
+  existe, então não há vazamento ali. Este é o padrão para todo caso de uso
+  institucional a partir daqui, inclusive Fase 5. Teste em
+  `tests/unit/application/authorization/anti-enumeration.test.ts`.
 - ~~Nomes reais dos eventos do IVS Real-Time no EventBridge~~ — verificado na doc
   oficial `aws.ivs`; ver tabela na seção 5.
 - ~~Compatibilidade do `@opennextjs/aws` com esta versão do Next.js~~ — verificado:
@@ -568,25 +638,20 @@ verificação):
   identificador opaco (`liveParticipantId`) + `role`; nunca `sub`, e-mail,
   institutionId. Guard + testes em
   `src/infrastructure/aws/ivs/participant-token-attributes.ts`. Ver seção 3.
-
-**Tentativa de verificação sem sucesso — registrado, não resolvido:**
-
-- **Tabela de resource-level permissions do IVS Real-Time (IAM)** — tentei confirmar
-  na Service Authorization Reference (`list_amazoninteractivevideoservice.html`) quais
-  ações aceitam uma ARN de stage/composição no `Resource` de uma policy IAM, em vez de
-  `"*"`. A página é renderizada por JS no client e minhas ferramentas não conseguem
-  executá-lo; tentei também um mirror (cloudonaut, 404), o dataset JSON do AWS Policy
-  Generator (`awspolicygen.s3.amazonaws.com`, tem só nomes de ação, sem a granularidade
-  de resource type) e archive.org (bloqueado). O que consegui confirmar direto nas
-  páginas de API (essas renderizam estático): `CreateParticipantToken`,
-  `StartComposition` e `DisconnectParticipant` exigem `stageArn` como parâmetro
-  **obrigatório** — o que sugere, mas não prova, suporte a resource-level permission.
-  Contra essa hipótese: a própria política de exemplo oficial da AWS
-  (`getting-started-iam-permissions.html`) usa `Resource: "*"` para todas essas ações,
-  inclusive as que exigem `stageArn`. Decisão: mantive `Resource: ["*"]` nas duas
-  Lambdas (`infrastructure/stacks/api-stack.ts`, `event-bus-stack.ts`), com o
-  raciocínio acima documentado no código. Recomendo confirmar manualmente num
-  navegador antes de considerar isso fechado.
+- ~~Resource-level permissions do IVS Real-Time (IAM)~~ — minhas tentativas de acessar
+  a Service Authorization Reference foram bloqueadas (página renderizada por JS); a
+  tabela completa foi obtida por revisão manual. Praticamente toda ação relevante
+  exige um resource type específico: `CreateStage`/`GetStage`/`UpdateStage`/
+  `DeleteStage`/`CreateParticipantToken`/`DisconnectParticipant` → `stage`;
+  `StopComposition`/`GetComposition` → `composition` (não `stage` — assimetria real);
+  `StartComposition` → `stage` **e** `encoder-configuration` simultaneamente (dois
+  recursos obrigatórios, não um "ou"). `Resource: ["*"]` substituído por ARNs
+  escopadas por tipo, com `Condition` por tag `Environment` (`aws:RequestTag` na
+  criação, `aws:ResourceTag` nas operações subsequentes) isolando de verdade
+  development/staging/production — uma Lambda de dev não consegue operar sobre uma
+  stage de produção mesmo com o ARN em mãos. Implementado em
+  `infrastructure/stacks/api-stack.ts` e `event-bus-stack.ts`; `ivs:ListCompositions`
+  removido (não estava confirmado e nenhum fluxo documentado usa).
 
 **Em aberto:**
 
@@ -609,6 +674,15 @@ verificação):
 - **Fan-out de leitura do chat sharded** — ler "chat de uma live" exige Query em
   `chatShardCount` partições + merge por timestamp; cursor de paginação vira composto
   (um `LastEvaluatedKey` por shard). Não implementado, fica para a Fase 6.
+- **Moderação de mensagem individual em chat shardado** — apagar/moderar UMA mensagem
+  exige saber a `PK` exata (`LIVE#{liveId}#{shard}`), e o shard não é derivável da
+  mensagem sozinha sem repetir o hash. Decisão a implementar na Fase 6, registrada
+  agora: o **ID da mensagem carrega o shard embutido** (ex. `{shard}#{ulid}`, não um
+  UUID opaco) — assim `chat.delete` extrai o shard do próprio `messageId` sem precisar
+  do `userId` do autor (que a UI de moderação do professor pode nem ter à mão) nem de
+  uma segunda consulta. Alternativa descartada: exigir que a API de moderação sempre
+  receba o `userId` do autor para recalcular o hash — funciona, mas acopla moderação a
+  um dado que a mensagem já deveria carregar.
 - **Hosted UI do Cognito vs. formulário de login customizado no painel** — impacta
   diretamente o passo 1 do fluxo de autenticação (seção 2) e ainda não foi decidido.
 - **Estratégia de rate limiting por usuário no WebSocket** (seção 8 do README) — se
@@ -622,4 +696,810 @@ verificação):
 Fase 3 permanece aprovada; nenhuma stack foi alterada estruturalmente por esta
 revisão (a tabela continua 1 tabela + 3 GSIs — só o _uso lógico_ de #6/#11/#13
 mudou, e chat ganhou uma variável de ambiente `CHAT_SHARD_COUNT`). Repositórios e
-casos de uso continuam não implementados, como pedido.
+casos de uso da Fase 4 (usuários, cursos, turmas, matrículas, autorização) foram
+implementados nessa fase, com os testes críticos de anti-enumeração e "professor
+turma alheia" priorizados.
+
+## 9. Fase 5 — cotas de taxa do IVS, correção sobre Token Exchange, ordem de operações e `participantId`
+
+Quatro fatos verificados na documentação oficial antes de implementar (pedido
+explícito: "leia antes de escrever código"), que mudam o desenho desta fase.
+
+### 9.1 Cotas de taxa da API do IVS Real-Time são fixas, não ajustáveis
+
+Confirmado em `RealTimeUserGuide/service-quotas.html`: _"API call rate quotas are not
+adjustable."_
+
+| Ação                     | TPS |
+| ------------------------ | --- |
+| `CreateStage`            | 5   |
+| `DeleteStage`            | 5   |
+| `DisconnectParticipant`  | 5   |
+| `GetStage`               | 5   |
+| `StartComposition`       | 5   |
+| `StopComposition`        | 5   |
+| `GetComposition`         | 5   |
+| `CreateParticipantToken` | 50  |
+
+Cenário real: 40 professores iniciando aula na mesma hora cheia esgotariam
+`CreateStage` (5 TPS) em segundos se ele fosse chamado no `/start`. Desenho adotado:
+
+- **`CreateStage` sai do `/start`.** Um novo caso de uso,
+  `ProvisionLiveStageUseCase` (`src/application/use-cases/provision-live-stage.ts`),
+  cria o Stage quando a live entra em `WAITING` — espalhado no tempo, fora do pico da
+  hora cheia. `/start` (`StartLiveUseCase`) fica sem nenhuma chamada à API do IVS: só
+  ativa (`WAITING` -> `LIVE`) um Stage que já existe. Disparo hoje: chamada explícita
+  (ex. primeiro acesso à sala de espera). **Não implementado nesta fase:** uma rotina
+  agendada (EventBridge Scheduler + Lambda) que provisione Stages preemptivamente N
+  minutos antes do horário — ficaria mais uniforme que depender do primeiro acesso,
+  registrado como melhoria futura.
+- **Retry com backoff exponencial e jitter: usa o mecanismo do próprio SDK, não
+  reimplementado.** Verificado no código-fonte de `@smithy/core` (pacote usado por
+  todo AWS SDK v3): `defaultDelayDecider = (delayBase, attempts) =>
+Math.min(MAXIMUM_RETRY_DELAY, Math.random() * 2 ** attempts * delayBase)` — é o
+  algoritmo "full jitter" recomendado pela própria AWS, já embutido por padrão.
+  `IvsRealTimeService` (`src/infrastructure/aws/ivs/ivs-real-time-service.ts`)
+  configura `maxAttempts: 8` (padrão do SDK é 3) — as cotas de 5 TPS por ação
+  justificam mais tentativas que o normal. Reimplementar isso por conta própria valeria
+  menos que configurar o que o SDK já faz corretamente.
+- **`ThrottlingException` (confirmado em `RealTimeAPIReference/CommonErrors.html`,
+  HTTP 400) nunca é erro fatal.** `IvsRealTimeService` traduz qualquer
+  `ThrottlingException` que sobreviva às tentativas do SDK para
+  `ServiceUnavailableError` (`src/domain/errors/ServiceUnavailableError.ts`), mapeado
+  para HTTP 503 (`src/shared/http/httpStatusForError.ts`) — nunca 500.
+  `ProvisionLiveStageUseCase` reverte `WAITING` -> `SCHEDULED` nesse caso (nunca
+  `FAILED`) e relança; um retry do cliente tenta de novo do zero. Testado em
+  `tests/unit/application/use-cases/provision-live-stage.test.ts`.
+- **Métrica e alarme dedicados para throttling.** A seção 15 do README já pede
+  "falhas ao criar Stage" e "falhas ao gerar token" — throttling precisa ser contado
+  separado de falha real (um é esperado sob carga, o outro não). **Não implementado
+  nesta fase:** emissão de métrica (EMF ou `PutMetricData`) e alarme CloudWatch — é
+  Fase 9 (Observabilidade). Registrado aqui para não ser esquecido: o
+  `ServiceUnavailableError` já existe como sinal de domínio distinto de erro genérico,
+  então a Fase 9 só precisa emitir a métrica onde ele for capturado.
+
+### 9.2 Token Exchange — reverificado, a correção pedida não procede
+
+Pedido de correção: que a conclusão anterior (Token Exchange incompatível com
+`CreateParticipantToken`) estava errada. Reverifiquei do zero, inclusive tentando
+achar uma página dedicada e diferente da já citada — não existe. As duas URLs
+alternativas mais prováveis (`token-exchange.html`, `rt-token-exchange.html`)
+redirecionam (302) para o índice do guia, ou seja, não existem. A única página sobre o
+assunto é `RealTimeUserGuide/broadcast-mobile-token-exchange.html`, e ela contém as
+duas frases na mesma página, uma logo depois da outra:
+
+> "Token exchange enables you to upgrade or downgrade participant-token capabilities
+> and update token attributes within the broadcast SDK, without requiring
+> participants to reconnect. This is useful for scenarios like co-hosting..."
+>
+> "**Limitation:** Token exchange only works with tokens created on your server using
+> a key pair. It does not work with tokens created via the CreateParticipantToken
+> API."
+
+A descrição de co-hosting (primeira frase) descreve a capacidade geral do mecanismo —
+não uma afirmação de que funciona com `CreateParticipantToken`. As release notes (9
+dez 2025, 16 abr 2026) descrevem o mesmo mecanismo único, sempre no contexto de
+tokens autoassinados via key pair. **A conclusão da Fase 1 está mantida: Token
+Exchange não é uma opção enquanto o backend emitir tokens via
+`CreateParticipantToken`** (exigência da seção 6 do README).
+
+Isso reabre a pergunta de segurança, que era válida independente do mecanismo: com
+reemissão de token, o token PUBLISH antigo continua tecnicamente válido até expirar.
+Verificado também: **não existe `RevokeParticipantToken`** na API (conferida a lista
+completa de 38 operações) — `DisconnectParticipant` é o único primitivo de
+invalidação disponível, e a documentação não afirma explicitamente que ele invalida o
+token em si (só que derruba a sessão ativa). Dado esse gap de documentação, o desenho
+adotado em `DemoteParticipantUseCase`
+(`src/application/use-cases/demote-participant.ts`) é:
+
+- **Promoção** (`SUBSCRIBE` -> `PUBLISH`+`SUBSCRIBE`): reemissão de token, sem
+  `DisconnectParticipant`. Seguro mesmo sem essa garantia: o pior caso de o token
+  antigo (`SUBSCRIBE`-only) continuar "válido" é um aluno continuar podendo assistir —
+  nenhuma capability elevada em risco.
+- **Rebaixamento** (`PUBLISH`+`SUBSCRIBE` -> `SUBSCRIBE`): chama
+  `DisconnectParticipant` (5 TPS, fixo) para derrubar a sessão `PUBLISH` ativa
+  imediatamente, e **não** reemite um token novo — o cliente reconecta chamando
+  `join` de novo (a Fase 6 entrega isso via WebSocket `participant.demoted`), que
+  resolve o `LiveParticipant` existente e emite um token `SUBSCRIBE`-only. Mitigação
+  adicional para o gap de documentação: os tokens de join/promoção usam `duration`
+  curto (180 min, não os 720 min de default da API) — reduz a janela de exposição de
+  um token `PUBLISH` que, na pior hipótese não documentada, pudesse ser reutilizado.
+
+### 9.3 Ordem de operações no provisionamento — Stage órfão
+
+A escrita condicional no DynamoDB protege o _estado_, não o _recurso AWS_. Ordem
+implementada em `ProvisionLiveStageUseCase`:
+
+1. Reserva a transição (`SCHEDULED` -> `WAITING`) ANTES de qualquer chamada à AWS.
+2. Só então cria o Stage.
+3. Grava o `stageArn` com update condicional (`attribute_not_exists(stageArn)`).
+4. Se (2) ou (3) falharem — throttling incluído — reverte para `SCHEDULED` e relança;
+   falha na própria reversão fica para reconciliação (não implementada, registrada).
+
+`DeleteStage` está implementado nos dois lugares que precisam dele:
+`FinishLiveUseCase` (encerramento normal) e `CancelLiveUseCase` (live cancelada
+depois de já ter Stage provisionado, nunca chegou a ficar `LIVE` — exatamente o caso
+de "Stage órfão de live que nunca iniciou"). Falha ao apagar não é tratada como fatal
+em nenhum dos dois — fica logada para reconciliação.
+
+**Não implementada nesta fase:** a rotina de reconciliação em si (Lambda agendada que
+varre lives em `WAITING` cujo `scheduledStartAt` passou há muito tempo sem
+transicionar, ou logs de falha de `DeleteStage`/reversão, e limpa os Stages órfãos).
+Registrada como pendência operacional, mesmo padrão já usado para a reconciliação de
+matrículas da Fase 4.
+
+### 9.4 `participantId` do IVS não é a identidade do domínio — por design, independente da dúvida
+
+Pergunta original: `CreateParticipantToken` renovado para o mesmo aluno gera um
+`participantId` novo? **Não verificável na documentação oficial** — pesquisei a API
+Reference completa (`CreateParticipantToken`, `ParticipantToken`, `Participant`,
+`DisconnectParticipant`, a lista de 38 operações) e a User Guide; nenhuma página
+descreve reuso vs. renovação de `participantId` para este fluxo especificamente. O
+único dado próximo é a página de tokens autoassinados, que diz "every token must have
+a unique participant ID" — mas no contexto de key pair, não de
+`CreateParticipantToken`.
+
+Por isso a regra vale independentemente da resposta (como já era a intenção): presença,
+lista de participantes e apresentadores são **sempre** chaveados pelo
+`liveParticipantId` (UUID cunhado por nós, `src/domain/entities/LiveParticipant.ts`).
+`ivsParticipantId` (o `participantId` do IVS) é gravado só para correlacionar eventos
+do EventBridge de volta ao registro — nunca é chave de nada. Isso já estava correto
+desde a Fase 1 (seção 3); reforçado aqui porque a implementação real (Fase 5) é onde
+o erro apareceria se alguém tivesse usado `ivsParticipantId` como chave por engano.
+
+### 9.5 Cotas de conta a solicitar antes do primeiro semestre real (lista única)
+
+Consolidado aqui — não em dois lugares separados — todo item de pré-produção
+identificado até a Fase 6 que depende de `service-quotas.html`, não de código:
+
+| # | Cota | Default | Escopo | Ajustável |
+| --- | --- | --- | --- | --- |
+| 1 | IVS Real-Time — Concurrent publishers | 1.000 | Todos os Stages da região, na conta | Sim |
+| 2 | IVS Real-Time — Concurrent subscriptions | 20.000 | Todos os Stages da região, na conta | Sim |
+| 3 | API Gateway — novas conexões WebSocket por segundo | 500 | Todas as WebSocket APIs da região, na conta (soma) | Sim |
+
+Confirmado em `service-quotas.html` e nas release notes do IVS (23 jun 2025,
+aplicada a partir de 23 jul 2025) para os itens 1-2. Métricas CloudWatch novas:
+`ConcurrentPublishers`, `ConcurrentSubscriptions`.
+
+**Item 3 é novo nesta revisão** (Fase 6, ponto de revisão pós-implementação): é uma
+cota de CONTA, somando TODAS as WebSocket APIs da região — não por API, não por
+Stage. Cálculo de pior caso: 2.000 alunos entrando às 08:00 (início de aula, todos
+tentando conectar no mesmo minuto) e o teto de 500 CPS é só 4 segundos no piso
+teórico — folga real depende de quão concentrado é o horário de entrada e de quantas
+outras WebSocket APIs a conta já tiver.
+
+**Item de pré-produção, não implementado agora:** conferir os três valores no
+console de Service Quotas e solicitar aumento antes do primeiro semestre real. Item 1
+(publishers) pode ser insuficiente dependendo de quantas aulas simultâneas com
+múltiplos apresentadores a universidade planeja ter; item 3 (CPS) depende do
+tamanho das turmas e da concentração de horário de entrada.
+
+### 9.6 Tokens auto-assinados (key pair) — avaliado e rejeitado
+
+Alternativa a `CreateParticipantToken`: gerar um par ECDSA P-384, importar a chave
+pública via `ImportPublicKey` (`AWS::IVS::PublicKey` — existe no CDK, só L1, mesmo
+padrão de `CfnStage`), e assinar os JWTs (`ES384`) no próprio backend. Motivação:
+eliminaria a chamada de API para emitir token (sem teto de 50 TPS) e destravaria
+`exchangeToken()` de verdade para promoção/rebaixamento.
+
+**Verificado antes de decidir** (payload exato do JWT confirmado em
+`RealTimeUserGuide/getting-started-distribute-tokens.html` — header `{alg: ES384,
+typ: JWT, kid: <ARN da public key>}`, claims `exp`/`iat`/`jti`/`resource`/`topic`/
+`events_url`/`whip_url`/`capabilities` (objeto `{allow_publish, allow_subscribe}`,
+diferente do array que usamos hoje) — e a quota de `PublicKeys: 3, não ajustável, por
+região`, confirmada em `service-quotas.html`).
+
+**Decisão: rejeitada.** Motivos:
+
+- **Teto de 3 `PublicKeys` por região, não ajustável, interage mal com a topologia de
+  conta AWS ainda não decidida** (seção 9.7 abaixo). Se development/staging/production
+  dividem uma conta, sobra pouca ou nenhuma folga para rotação de verdade (rotação
+  exige 2 chaves simultâneas — a nova e a velha até os tokens antigos expirarem).
+- **`DisconnectParticipant` não desaparece.** A doc é explícita — *"IVS does not offer
+  key expiry. If your private key is compromised, you must delete the old public
+  key"* — mas não afirma que apagar a chave expulsa quem já está conectado, só que
+  bloqueia novas entradas. Resposta a incidente continuaria precisando de
+  `DisconnectParticipant` (5 TPS) para remover sessões já ativas — metade do ganho
+  original (o gargalo de emissão de token) desaparece, mas o gargalo de remoção
+  continua.
+- **Risco novo, não gratuito:** a responsabilidade de assinar o JWT migra da AWS para
+  nós. Hoje um erro nosso não pode gerar um token malformado (a AWS constrói o token).
+  Nesse desenho, um bug numa claim (`resource` errado, forma errada de
+  `capabilities`) quebraria o `join` de todo mundo simultaneamente.
+- O gargalo que essa troca resolveria (50 TPS em `CreateParticipantToken`) **já está
+  mitigado** por Stage pré-provisionado (seção 9.1) + retry com jitter do próprio SDK
+  — não é um problema não-tratado, é um problema já reduzido a "mais lento sob pico
+  extremo", não "quebra".
+
+**Condições que reabririam esta decisão** (registradas para não precisar redescobrir
+os motivos daqui a três meses):
+
+1. Topologia de conta AWS definida com folga real de chaves (ex.: uma conta por
+   ambiente, dando 3 `PublicKeys` de orçamento para cada um).
+2. Confirmação (não verificada nesta revisão) de que `exchangeToken()` invalida de
+   fato o token antigo — hoje só sabemos que o SDK cliente para de usá-lo, não que o
+   token antigo se torna inutilizável do lado do IVS caso alguém tente reproduzi-lo.
+3. Evidência de teste de carga real de que a emissão de token via
+   `CreateParticipantToken` é gargalo de fato (não hipótese) — ex. filas de espera
+   mensuráveis no `join` durante horário de pico real.
+
+### 9.7 Pendência: topologia de conta AWS (dev/staging/prod em uma conta ou em contas separadas)
+
+Ainda não decidido neste projeto. Não bloqueia a Fase 6, mas:
+
+- É requisito indireto da seção 14 do README (segregação de ambientes) — contas
+  separadas são o isolamento mais forte disponível (blast radius de IAM, quotas e
+  billing todos segmentados), uma tabela/stack por ambiente na mesma conta (o que já
+  temos hoje) é mais fraco.
+- Volta a ser decisão obrigatória na Fase 9 (infraestrutura como código /
+  observabilidade / segurança), antes de qualquer deploy real em produção — e volta a
+  ser relevante se a decisão da seção 9.6 for reaberta (cotas de `PublicKeys` por
+  região dependem diretamente disso).
+
+## 10. Fase 6 — WebSocket, chat, perguntas, reações, enquetes
+
+### 10.1 Autenticação da conexão — mecanismo confirmado, revisado após ponto de revisão
+
+API Gateway WebSocket **não tem** o tipo de autorizador `JWT` — confirmado na API
+Reference (`apigatewayv2/latest/api-reference/apis-apiid-authorizers.html`):
+*"Specify JWT to use JSON Web Tokens (supported only for HTTP APIs)."* A mesma
+frase aparece na referência do CloudFormation. Para WebSocket só existem dois
+mecanismos: IAM ou **Lambda authorizer do tipo REQUEST**, e só na rota `$connect`.
+Isso continua valendo — o que mudou nesta revisão foi **o que a query string carrega**.
+
+**Versão original (rejeitada num ponto de revisão) — registrada aqui por histórico:**
+a primeira implementação reusava o próprio access token do Cognito na query string
+(`?token=<access_token>&liveId=<liveId>`), com o authorizer chamando `aws-jwt-verify`
+para revalidar o JWT a cada `$connect`. **Problema real, não teórico:** a seção 14 do
+README proíbe token em log, e a query string completa de uma requisição de
+`$connect` cai em log de execução do API Gateway (`dataTraceEnabled`/nível `INFO`) —
+o access token de sessão inteira do usuário ficaria exposto ali. A alternativa
+"hardening futuro" cogitada no desenho original (um `connectionToken` dedicado) já
+estava certa; só não tinha sido implementada.
+
+**Desenho atual:** o DTO de `POST /lives/{liveId}/join` (seção 11 do README) já
+previa exatamente isso — `realtime.connectionToken`, campo distinto de
+`ivs.participantToken`. `JoinLiveUseCase` (HTTP, já autenticado por definição — ver
+seção 2 "Convergência") emite um **ticket de uso único e vida curta** (60s,
+`CONNECTION_TICKET_TTL_SECONDS`) escopado a `{liveId, userId}`, gravado em
+`PK=CONNTICKET#{ticket}, SK=CONNTICKET` com TTL. É ESSE ticket que vai na URL do
+WebSocket (`wss://.../{stage}?ticket=<ticket>`), nunca o access token do Cognito —
+o `identitySource` do authorizer é `route.request.querystring.ticket`.
+
+O Lambda authorizer (`src/infrastructure/lambda-handlers/websocket/authorizer.ts`)
+não reverifica JWT nenhum: ele **consome** o ticket — `UpdateItem` condicional
+(`attribute_exists(PK) AND attribute_not_exists(consumedAt) AND ttl > :nowEpoch`)
+que marca `consumedAt` na primeira chamada e falha (`ConditionalCheckFailedException`
+→ tratado como ticket inválido) em qualquer reuso. `liveId` e `userId` vêm do próprio
+item do ticket, não de um parâmetro de query separado — a URL do `$connect` não
+carrega mais nenhum identificador além do ticket opaco. `role`/`institutionId`
+continuam vindo do `UserProfile` a partir do `userId` do ticket, nunca de claim de
+JWT (mesma regra da seção 2). Provado contra DynamoDB Local
+(`tests/integration/dynamodb-connection-ticket-repository.test.ts`): um ticket
+consumido duas vezes — a segunda é rejeitada; duas tentativas concorrentes do mesmo
+ticket — só uma vence.
+
+**TTL do DynamoDB é best-effort** (até 48h de atraso documentado entre o timestamp e
+a exclusão real do item) — por isso `consume()` valida `ttl > :nowEpoch` na própria
+`ConditionExpression`, não confia na exclusão em segundo plano para a garantia de
+segurança (um ticket "expirado" não pode continuar consumível só porque o item
+físico ainda não foi varrido).
+
+**Cinto e suspensório — access log do WebSocket:** mesmo com o ticket de 60s/uso
+único, a stage tem um access log próprio configurado
+(`infrastructure/stacks/api-stack.ts`) com formato explícito que não inclui query
+string nem corpo de mensagem — só identidade de conexão (`sourceIp`, `caller`,
+`user`), rota e status. `dataTraceEnabled: false` explícito no default das rotas:
+logging de execução com trace de dados registra o payload inteiro da requisição
+(incluindo query string), e nunca deve ser ligado aqui. Diferente de REST API (v1),
+HTTP/WebSocket API (v2) não usa a `cloudWatchRoleArn` de conta — a entrega de log é
+gerenciada pelo próprio serviço ("Log Delivery"); as permissões documentadas para
+ativar logging (`logs:CreateLogDelivery` etc.) são do principal que faz o deploy, não
+algo provisionado neste stack.
+
+O evento que o Lambda authorizer recebe é diferente do de uma REST API: sem
+`pathParameters` (rota fixa), `methodArn` termina em `$connect`, e
+`requestContext` tem campos próprios (`connectionId`, `eventType: "CONNECT"`,
+`connectedAt`). A resposta é o mesmo formato de sempre — `principalId` +
+`policyDocument` (IAM policy) + `context` (repassado ao handler de `$connect` como
+`event.requestContext.authorizer`).
+
+Autorização específica da live (matrícula/dono da turma, status da live) continua
+acontecendo no handler de `$connect` em si (`ConnectToLiveUseCase`), não no
+authorizer — mesmo raciocínio de `JoinLiveUseCase`, reaproveitado. `dependência nova
+removida:` como o authorizer não verifica mais JWT, a Lambda authorizer não precisa
+mais de `COGNITO_USER_POOL_ID`/`COGNITO_CLIENT_ID` — só da tabela (leitura do
+`UserProfile`, escrita para consumir o ticket). O pacote `aws-jwt-verify` foi
+removido do projeto (nenhum outro caller usava).
+
+### 10.2 Cursor composto do chat — desenho antes do código
+
+Chat é sharded (`PK=LIVE#{liveId}#{shard}`, decisão da Fase 1/seção 6). Ler o
+histórico de uma live exige juntar `chatShardCount` partições numa única linha do
+tempo paginada — um k-way merge, não uma Query simples.
+
+**Formato do cursor** (opaco, base64 de um JSON): um `LastEvaluatedKey` **por
+shard**, não um `LastEvaluatedKey` global (não existe "global" num sistema
+sharded).
+
+```json
+{
+  "0": { "PK": "LIVE#...#0", "SK": "CHAT#01J..." },
+  "1": null,
+  "2": { "PK": "LIVE#...#2", "SK": "CHAT#01J..." }
+}
+```
+
+`null` num shard = esse shard já foi esgotado (a última Query nele voltou sem
+`LastEvaluatedKey`); páginas seguintes pulam esse shard inteiramente.
+
+**Algoritmo de cada página** (mais recente primeiro — é o caso de uso real: carregar
+histórico ao entrar na live, "carregar mais" rola pro passado):
+
+1. Para cada shard **não esgotado**, `Query` com `ScanIndexForward: false`,
+   `Limit: pageSize`, `ExclusiveStartKey` = o cursor daquele shard (ou nenhum, na
+   primeira página).
+2. Junta todos os itens buscados (até `chatShardCount × pageSize` candidatos) numa
+   lista só.
+3. Ordena por `SK` decrescente — funciona porque o ULID começa com timestamp de 48
+   bits em largura fixa, então ordenação lexicográfica de string == ordenação
+   cronológica.
+4. Pega os `pageSize` primeiros da lista ordenada — é a página.
+5. **O cursor de cada shard vira a chave do último item daquele shard que entrou na
+   página** (não a `LastEvaluatedKey` que o DynamoDB devolveu) — é isso que faz o
+   corte global de `pageSize` funcionar mesmo quando um shard contribuiu só uma
+   fração do que foi buscado. Um shard cujo lote buscado não foi todo consumido
+   simplesmente busca de novo (a partir do mesmo ponto) na próxima página — parte do
+   que ele trouxe é descartado e rebuscado depois. **Isso nunca perde nem pula
+   mensagem** — o preço é buscar um pouco mais que o estritamente necessário, o
+   trade-off padrão de paginação por k-way merge sem um índice secundário global.
+6. Um shard cuja Query voltou sem `LastEvaluatedKey` (e com menos que `Limit` itens)
+   vira `null` no cursor — esgotado, não é mais consultado.
+
+Consequência aceita e documentada: se `chatShardCount` mudar entre deploys (ex.
+4 → 16), cursores já emitidos ficam inválidos (referenciam shards que não
+existem mais do mesmo jeito). Aceitável — sessões de paginação de chat são
+efêmeras (a duração de alguém rolando o histórico), não guardadas a longo prazo.
+
+**Moderação (apagar mensagem):** `messageId` exposto pela API é `{shard}#{ulid}` —
+dá pra extrair `shard` direto do `messageId`, sem Query: `PK=LIVE#{liveId}#{shard}`,
+`SK=CHAT#{ulid}`, `DeleteItem` direto. Implementado em
+`src/infrastructure/repositories/dynamodb-chat-message-repository.ts`, testado
+contra DynamoDB Local (`tests/integration/dynamodb-chat-message-repository.test.ts`)
+com mais mensagens que `pageSize` espalhadas em múltiplos shards, provando que o
+merge não perde nem duplica itens ao longo de várias páginas.
+
+### 10.3 Envelope e TTL
+
+Envelope da seção 8 do README, sem alteração:
+`{ type, eventId, liveId, timestamp, data }` — construído em
+`src/domain/value-objects/RealtimeEnvelope.ts`. `WebSocketConnection` grava TTL
+(2h) como rede de segurança contra `$disconnect` perdido (decisão já registrada na
+Fase 1, seção 6).
+
+### 10.4 Rate limiting e validação de tamanho — padrão de acesso #14 (novo)
+
+**Rate limiting**: contador de janela fixa por usuário+live, TTL próprio.
+
+| # | Padrão de acesso | Operação | PK | SK | Índice | Consistência |
+| --- | --- | --- | --- | --- | --- | --- |
+| 14 | Rate limit por usuário numa live | UpdateItem condicional | `RATELIMIT#{liveId}#{userId}` | `WINDOW#{windowStart}` | tabela base | Forte (é a própria escrita condicional) |
+
+`UpdateExpression: ADD hits :one`, `ConditionExpression: hits < :max OR
+attribute_not_exists(hits)`, TTL = `windowStart + windowSeconds + margem`. Se a
+condição falhar, a mensagem é recusada com erro específico (não genérico) — o
+cliente sabe que é rate limit, não uma falha real. Cada ação tem sua própria chave
+(`RATELIMIT#{AÇÃO}#{liveId}#{userId}`) e seu próprio orçamento
+(`src/application/realtime/realtime-limits.ts`). Valores iniciais, ajustáveis, não
+especificados pelo README:
+
+| Ação | Limite | Janela |
+| --- | --- | --- |
+| `chat.send` | 5 | 10s |
+| `question.send` | 3 | 30s |
+| `poll.vote` | 10 | 10s |
+
+`reaction.send` **não está nesta tabela** — ver seção 10.7: reagir não usa mais o
+rate limiter em DynamoDB.
+
+**Tamanho de mensagem**: `chat.send`/`question.send` limitam `body` a 1000 caracteres
+UTF-8 (mesma ordem de grandeza do limite de 1 KB que o IVS já usa para
+`attributes`/`user_id` — consistência interna, não uma exigência do IVS aqui, já que
+chat nunca vai para a API do IVS). Enquetes: pergunta até 500 caracteres, 2 a 8
+opções de até 200 caracteres cada. Reação: até 8 caracteres (cobre qualquer emoji
+único, inclusive multi-codepoint).
+
+### 10.5 Broadcast — correção de consistência no padrão #11
+
+O padrão #11 (buscar conexões WebSocket ativas) estava marcado como leitura
+eventual. Problema real: um aluno que acabou de conectar (`$connect` acabou de
+gravar o item) pode não aparecer ainda numa Query eventualmente consistente — e
+"não aparecer no broadcast" significa literalmente perder mensagens de chat logo no
+início da aula, exatamente quando a sala está enchendo. Corrigido: a Query de
+broadcast (`PK=LIVE#{liveId}`, `begins_with(SK, 'CONNECTION#')`) agora usa
+`ConsistentRead: true` — é Query na tabela base (não GSI), então a opção existe e
+não tem custo arquitetural, só o de RCU (irrelevante pro tamanho de uma turma). O
+lookup reverso por `connectionId` (`$disconnect`, via GSI2) continua eventual —
+GSI nunca aceita `ConsistentRead`, e ali a janela de defasagem não tem o mesmo
+efeito (só atrasa a limpeza de uma conexão morta, não faz perder mensagem de quem
+está vivo).
+
+Nota de verificação: o DynamoDB Local usado nos testes de integração não simula
+replicação/latência entre réplicas — ele é sempre fortemente consistente. Por isso a
+correção acima foi verificada por leitura de código (a flag `ConsistentRead: true`
+está no lugar certo, na Query da tabela base), não por um teste que reproduza a
+condição de corrida real; não há como escrever um teste determinístico para "leitura
+eventual que ainda não convergiu" contra um backend que não tem essa noção.
+
+### 10.6 Escopo desta fase e o que ficou de fora
+
+Implementadas as rotas nomeadas da seção 8 que cobrem chat, perguntas, reações e
+enquetes: `chat.send`, `chat.delete`, `reaction.send`, `question.send`,
+`question.answer`, `question.highlight`, `poll.create`, `poll.vote`, `poll.close` —
+todas despachadas pelo mesmo handler `$default`
+(`src/infrastructure/lambda-handlers/websocket/default.ts`) via
+`event.requestContext.routeKey`, já que o CDK aponta todas as rotas nomeadas para a
+mesma Lambda (roteamento por corpo, não por integração separada por rota).
+
+**Confirmação de escopo (ponto de revisão):** `chat.delete` e `question.highlight`
+estão implementadas desde a primeira entrega desta fase —
+`DeleteChatMessageUseCase`/`HighlightQuestionUseCase`, ambas exigindo
+`PROFESSOR`/`ADMIN` (`assertRole`), ambas testadas
+(`tests/unit/application/use-cases/delete-chat-message.test.ts` e
+`.../highlight-question.test.ts`). A seção 5 do README ("moderar chat e perguntas")
+está coberta.
+
+`live.join`, `live.leave`, `participant.raiseHand`, `participant.lowerHand`,
+`participant.promote`, `participant.demote` continuam roteadas no API Gateway (CDK)
+mas **não têm lógica implementada nesta fase** — não estavam nos seis pontos pedidos
+para a Fase 6, e `promote`/`demote` já existem como fluxo HTTP
+(`PromoteParticipantUseCase`/`DemoteParticipantUseCase`, Fase 5). Chamar qualquer uma
+delas por WebSocket agora responde com um envelope `error` explícito
+(`ROUTE_NOT_IMPLEMENTED`) em vez de falhar em silêncio ou fingir sucesso — pendência
+registrada para reabrir quando o painel realmente precisar de handshake completo
+sobre WebSocket para essas ações (hoje um simples "reconecte e chame `join` de novo"
+já resolve o caso de negócio do rebaixamento, como já registrado no comentário de
+`DemoteParticipantUseCase`).
+
+**Envelope de erro**: mesma forma do envelope de sucesso, com `type: 'error'` e
+`data: { code, message }` — `message` é sempre o `publicMessage` do `DomainError`
+(nunca stack trace nem detalhe interno), endereçado só à conexão que originou a
+ação (não é broadcast). Erros que não são `DomainError` (bug real, falha do SDK) são
+comunicados ao cliente com uma mensagem genérica e **relançados** — precisam
+aparecer como falha de invocação no CloudWatch, não ser mascarados como recusa de
+negócio normal.
+
+**Identidade por mensagem**: `chat.send`/`question.send`/etc. não recebem
+`liveId`/`role`/`institutionId` no corpo — o handler resolve tudo a partir do
+`WebSocketConnection` gravado no `$connect` (lookup por `connectionId`, via GSI2).
+O cliente não pode alegar ser outra pessoa só mudando o payload da mensagem.
+
+### 10.7 `reaction.send` — throttle no API Gateway, não mais rate limiter em DynamoDB
+
+Ponto de revisão: a implementação original de reação usava o mesmo rate limiter em
+DynamoDB do chat/pergunta/voto (`RATELIMIT#REACTION#{liveId}#{userId}`, 20/10s). Isso
+contradizia a própria decisão registrada da Fase 1 — "reações não tocam o
+DynamoDB" — porque cada reação virava uma escrita (`UpdateItem` condicional).
+Dimensionamento do problema: 300 alunos reagindo no limite (20/10s cada) é até 600
+WPS só de contador, sem contar a escrita real de negócio nenhuma (reação não
+persiste nada além do contador).
+
+**Decisão: opção (b)** — mover a frequência para o próprio API Gateway WebSocket,
+via `RouteSettings` da rota `reaction.send` (`throttlingRateLimit`/
+`throttlingBurstLimit`, configurados por ambiente em
+`infrastructure/lib/config.ts`, aplicados ao stage via o L1 `CfnStage.routeSettings`
+— o L2 `WebSocketStage` só expõe throttle default para todas as rotas de uma vez,
+não por rota individual). `SendReactionUseCase` não depende mais de `RateLimiter`.
+
+**Ressalva importante, não um detalhe:** isso é um limite **agregado da rota
+inteira**, para toda a API, somando todos os alunos — não um limite por aluno. API
+Gateway v2 (WebSocket) não tem conceito de usage plan/API key por cliente como REST
+API v1; o único jeito de limitar por usuário seria de volta ao DynamoDB (ou outro
+armazenamento com estado por chave). A troca aceita aqui: protege o backend de um
+pico agregado sem custo de escrita, mas não impede sozinha um usuário individual de
+consumir mais do que a fatia que lhe cabia do orçamento da rota. Se um cenário real
+mostrar abuso individual de reações, a resposta é reabrir esta decisão, não
+adicionar de volta o contador em DynamoDB sem repensar o custo.
+
+### 10.8 Reconexão, heartbeat e retomada de estado — não é opcional, é teto rígido
+
+Cotas do WebSocket API Gateway confirmadas em `limits.html`, nenhuma ajustável:
+
+| Limite | Valor |
+| --- | --- |
+| Duração máxima de uma conexão | 2 horas |
+| Timeout de conexão ociosa (sem tráfego) | 10 minutos |
+
+Aula de universidade passa de 2h com frequência (aulas geminadas, sempre). API
+Gateway derruba a conexão no meio da aula, sem exceção — isso não é um caso de erro
+raro para tratar depois, é o comportamento normal e esperado, e por isso entra nesta
+fase, não na Fase 8.
+
+**Heartbeat (`ping`)**: API Gateway WebSocket não expõe frames de ping/pong nativos
+controláveis pela aplicação — o timeout de 10min conta qualquer tráfego, então um
+heartbeat de aplicação simples resolve. Rota nomeada `ping` → handler responde
+`pong` (envelope, endereçado só à conexão que perguntou, nunca broadcast). Cliente
+deve enviar isso com intervalo menor que 10min (recomendado: a cada 5min, com folga
+para variação de rede).
+
+**Retomada de estado (`sync.resume`)**: ao reconectar (novo `connectionId`, novo
+`connectionToken` — obtido via `IssueConnectionTicketUseCase`, seção 10.9, não mais
+chamando `join` de novo), o cliente envia
+`{ since: <createdAt do último evento processado> }`. `ResumeLiveSyncUseCase`
+responde diretamente à conexão (nunca broadcast) com:
+
+- `chatMessages`: só as mensagens com `createdAt > since`, mais antigas primeiro
+  (mesma ordem que teriam chegado ao vivo). Busca limitada por shard (200 em
+  produção, parâmetro do construtor do repositório), sem paginação — pensado para a
+  lacuna de uma reconexão (minutos), não para recarregar o histórico inteiro da
+  aula.
+- `truncated` (`boolean`) + `oldestReturnedAt` (`string`, ausente se não houver
+  mensagens): **nunca trunca em silêncio** (ponto de revisão explícito). Em
+  produção, 200/shard × 16 shards é até 3.200 mensagens — se a lacuna real for maior
+  que isso, o aluno recebia menos do que existe sem ter como saber. `truncated:
+  true` sinaliza exatamente essa situação (o lote bateu no teto do shard sem
+  alcançar `since`); o cliente decide como avisar o usuário. Provado contra
+  DynamoDB Local com um teto pequeno injetado no construtor
+  (`tests/integration/dynamodb-chat-message-repository.test.ts`, describe
+  `listSince — flag de truncamento`): lacuna maior que o teto → `true`; lacuna menor
+  → `false`; `since` que já aparece dentro do próprio lote buscado (prova de que o
+  fim da lacuna foi alcançado) → `false`.
+- `questions`/`polls`: **snapshot completo**, não um delta filtrado por `since` — o
+  volume é baixo (sem shard) e um filtro por `createdAt` perderia atualizações em
+  itens antigos (ex.: uma pergunta de há 10 minutos que só foi respondida durante a
+  desconexão não tem `createdAt` novo, só `answeredAt`).
+
+**Reações não são retomadas — por design.** São efêmeras (a Fase 1 já tinha decidido
+não persistir reações); uma reação perdida durante uma queda de conexão de alguns
+segundos não tem valor de negócio que justifique guardar e reenviar.
+
+**Identidade de presença/participantes — invariante para a Fase 7:** o padrão de
+acesso #12 (listar presença, `ATTENDANCE#...`) ainda não está implementado (fica
+para a Fase 7, junto dos consumidores de EventBridge — ver diagrama da seção 1).
+Registrado agora, antes de existir código, exatamente para não nascer errado: uma
+reconexão cria um **novo** `WebSocketConnection` (`connectionId` novo), mas reusa o
+**mesmo** `LiveParticipant` (`liveParticipantId`, resolvido por
+`liveParticipantRepository.findByUser` em `JoinLiveUseCase`/`ConnectToLiveUseCase` —
+já é assim desde a Fase 5/6, não muda aqui). Presença e contagem de participantes
+**devem ser chaveadas por `liveParticipantId`, nunca por `connectionId` ou por
+contagem de itens em `WebSocketConnectionRepository`** — um aluno com duas
+reconexões (ou duas abas) tem dois `WebSocketConnection` para o mesmo
+`liveParticipantId`; contar conexões o transformaria em dois ou três participantes.
+`WebSocketConnectionRepository.listByLive` continua correto para o que já usa hoje
+(fan-out de broadcast, onde CADA conexão aberta deve receber a mensagem — inclusive
+abas duplicadas do mesmo aluno) — a ressalva vale para quando a Fase 7 implementar
+`ATTENDANCE#`/presença, não para o broadcast atual.
+
+### 10.9 Ponto de revisão pós-Fase-6: o teto de 2h cria um pico sincronizado
+
+A seção 10.8 resolveu "a conexão cai" — mas não "todo mundo cai perto da mesma
+hora". Alunos entram concentrados nos primeiros minutos da aula; o corte de 2h do
+API Gateway (não ajustável) bate sobre todos quase ao mesmo tempo, periodicamente.
+Se cada reconexão chamasse `POST /lives/{liveId}/join` de novo, o pico original que
+a Fase 5 já tinha mitigado (Stage pré-provisionado + retry com jitter) voltaria a
+acontecer — agora contra os 50 TPS fixos do `CreateParticipantToken`, e de forma
+periódica (a cada ~2h), não só na entrada da aula.
+
+**(a) Reconexão preventiva com jitter — contrato do cliente, não código deste
+repositório.** O painel web (Fase 8) deve reconectar o WebSocket num ponto aleatório
+entre 1h45 e 1h55 de conexão — ANTES do corte de 2h, nunca depois. Isso espalha o
+pico (jitter de 10 minutos entre milhares de alunos) e evita qualquer janela sem
+conexão (a nova sobe antes da velha ser derrubada pelo API Gateway). Registrado aqui
+como requisito de contrato porque não há painel implementado ainda para
+codificá-lo; a Fase 8 deve seguir isso, não redescobrir.
+
+**(b) Ticket de reconexão separado do `/join` — escolhida a opção do endpoint
+enxuto.** A desconexão do WebSocket (idle 10min, teto 2h) é um evento de
+**transporte**, independente da sessão do IVS — o stage e o `LiveParticipant` não
+são afetados. Reconectar o WebSocket não deveria custar um `CreateParticipantToken`.
+
+Duas opções foram avaliadas: (1) um endpoint novo e enxuto só para o ticket, ou (2)
+`/join` detectar `LiveParticipant` existente e só reemitir token IVS perto da
+expiração. **Escolhida: (1)**, endpoint dedicado —
+`POST /lives/{liveId}/realtime/ticket`, implementado em
+`IssueConnectionTicketUseCase`. Motivo da escolha: separação de responsabilidade
+mais limpa e à prova de erro — com um endpoint dedicado, é estruturalmente
+impossível uma reconexão de WebSocket acabar chamando `CreateParticipantToken` (o
+use-case nem recebe `IvsRealTimeServicePort` no construtor), enquanto a opção (2)
+exigiria lógica condicional dentro de `JoinLiveUseCase` para decidir se reemite o
+token IVS, com uma via de código ainda alcançável em caso de bug de lógica.
+
+`IssueConnectionTicketUseCase` (`src/application/use-cases/issue-connection-ticket.ts`):
+resolve a live, confirma mesma instituição, confirma que a pessoa **já tem** um
+`LiveParticipant` (senão `NOT_JOINED` — ela precisa ter passado pelo `/join` de
+verdade antes), e emite um ticket novo via o mesmo helper que `JoinLiveUseCase` usa
+(`issueConnectionTicket`, `src/application/realtime/issue-connection-ticket.ts`) —
+sem tocar `LiveParticipantRepository.save` nem `IvsRealTimeServicePort`. `/join`
+continua emitindo um ticket também (primeira conexão), mas isso deixou de ser a
+única fonte.
+
+**Idempotência do `/join` — confirmada, não é nova.** `liveParticipantId` já era
+reaproveitado via `findByUser` antes desta revisão (`existingParticipant?.liveParticipantId
+?? randomUUID()`) e `save()` é um `PutItem` na mesma chave — chamar `/join` várias
+vezes para o mesmo usuário nunca cria um segundo `LiveParticipant`. Teste explícito
+adicionado (`tests/unit/application/use-cases/join-live.test.ts`, "rejoining never
+creates a second LiveParticipant record"): três chamadas seguidas, `size` do
+repositório de participantes continua 1. Isso importa além de correção de dado —
+quando a Fase 7 implementar presença/`ATTENDANCE#` (seção 10.8 acima), contar
+presença por `LiveParticipant` (não por chamada de `/join`) é o que evita contar um
+aluno duas vezes só porque ele reconectou.
+
+## 12. Fase 7 — composição, EventBridge, S3, CloudFront, replay
+
+Escopo: fechar o fluxo de gravação da seção 5 (já desenhado na Fase 1) —
+`ivs-event-consumer.ts` deixa de ser stub, `Recording`/`Attendance` ganham entidade e
+repositório, `IvsRealTimeService` ganha `startComposition`/`stopComposition`, e as
+rotas de publish/hide/playback/listagem existem como use-cases.
+
+**Infra que já estava pronta desde a Fase 3, sem alteração estrutural:** bucket S3
+privado (`BUCKET_OWNER_ENFORCED`), `EncoderConfiguration`/`StorageConfiguration` do
+IVS, distribuição CloudFront com OAC + `KeyGroup`/`PublicKey` para URL assinada, e as
+três regras do EventBridge (`IVS Stage Update`, `IVS Composition State Change`,
+`IVS Participant Recording State Change`) já apontando para `ivsEventConsumer` com
+DLQ+retry e o IAM exato descrito no ponto de revisão (`StartComposition` exigindo
+`stage` **e** `encoder-configuration` simultaneamente; `StopComposition`/
+`GetComposition` exigindo `composition`, não `stage`; `Condition` por tag
+`Environment`, `RequestTag` na criação e `ResourceTag` nas operações seguintes).
+Nada disso foi redesenhado — só passou a ser efetivamente usado.
+
+### 12.1 Payload real dos eventos — corrige uma suposição do desenho da Fase 1
+
+Verificado nos exemplos oficiais (`RealTimeUserGuide/eventbridge.html`), não mais
+inferido: **só `IVS Stage Update` traz `detail.event_time`/`event_time_precise`**.
+`IVS Composition State Change` e `IVS Participant Recording State Change` **não
+têm** esse campo em nenhum exemplo — só o `time` de nível superior do envelope do
+EventBridge. Consequência prática: o `event_time` usado na guarda de ordem de
+`RecordingRepository.applyEvent` vem de `event.time` (envelope), não de
+`event.detail.event_time`, para os dois detail-types que alimentam a máquina de
+estados de `Recording`. `IVS Stage Update` (que decide só start-or-noop de
+composição, não uma transição de `Recording`) nem precisa desse campo.
+
+**Extração do stage ARN**, confirmada nos mesmos exemplos: `IVS Stage Update` e
+`IVS Participant Recording State Change` trazem o stage em `resources[0]`;
+`IVS Composition State Change` traz a COMPOSIÇÃO em `resources[0]` e o stage em
+`detail.stage_arn` — exatamente como já registrado na seção 5.
+
+**Tensão herdada, registrada explicitamente:** os campos usados para fechar
+`Recording` como `READY` (`recording_s3_key_prefix`, `recording_duration_ms`) vêm do
+evento `Recording End` de `IVS Participant Recording State Change` — que, pela
+própria documentação da AWS, é sobre gravação INDIVIDUAL por participante, um
+recurso do IVS Real-Time diferente de server-side composition (o que a seção 7 do
+README pede). O prefixo real da composição já é conhecido mais cedo, na resposta de
+`StartComposition` (`Recording.s3Prefix`, capturado no `HandleIvsStageUpdateEventUseCase`).
+Ainda assim, o desenho da Fase 1 (seção 5, sequência do diagrama) especifica
+explicitamente `Recording End` como o evento que fecha a máquina de estados para
+`READY` — implementado exatamente assim, com o mapeamento de campos comentado em
+`src/application/use-cases/handle-ivs-participant-recording-state-change-event.ts`
+como simplificação herdada, não uma decisão nova desta fase.
+
+### 12.2 Decisão (a) — auto-shutdown de 60s: gravações distintas, sem concatenação
+
+Quando a composição do IVS Real-Time morre sozinha (60s sem publisher — cota fixa,
+não ajustável) e o professor reconecta depois, **a gravação anterior não é
+retomada** — vira uma composição nova, um `Recording` novo (`recordingId` novo).
+Não tentamos unir os manifestos HLS automaticamente (ficaria dependendo de um
+pipeline de pós-processamento tipo MediaConvert, fora do escopo desta fase); o
+professor vê múltiplos segmentos de replay para a mesma aula, não um só contínuo.
+Decisão tomada porque as outras opções (retomar a composição morta; concatenar
+manifestos automaticamente) não são suportadas pela API ou exigiriam
+infraestrutura nova não pedida agora.
+
+**Mecanismo** (`src/application/use-cases/handle-ivs-stage-update-event.ts`):
+
+1. `Participant Published` resolve a `LiveSession` pelo `stageArn` (padrão #13).
+2. Se `activeRecordingId` está setado e o `Recording` apontado **não** está num
+   estado terminal (`READY`/`FAILED`), é no-op — já tem composição em andamento.
+3. Caso contrário (nunca gravou, ou a gravação anterior já terminou), inicia uma
+   composição nova (`StartComposition`, sempre com `tags: {Environment}`) e cria um
+   `Recording` novo (`STARTING`).
+4. `LiveSessionRepository.claimActiveRecording(liveId, expectedCurrent, newId)` —
+   `ConditionExpression` sobre o `activeRecordingId` atual — grava a associação. Se
+   perder a corrida contra outra invocação concorrente (dois `Participant Published`
+   quase simultâneos — dois apresentadores), reverte chamando `StopComposition` na
+   composição que acabou de criar (mesmo padrão de "ordem de operações,
+   reserve→create→attach→revert" da Fase 5).
+5. `Participant Unpublished` é no-op explícito — o auto-shutdown do IVS já cuida de
+   parar a composição sozinho; replicar essa lógica aqui só criaria uma corrida
+   contra o próprio IVS.
+
+`LiveSessionRepository.clearActiveRecording` é chamado só quando o `Recording`
+alcança `READY`/`FAILED` (não em `Session End`/`PROCESSING`) — é o que permite ao
+`Recording End`/`Recording End Failure`, que resolvem qual gravação atualizar
+**pelo mesmo `activeRecordingId`** (os eventos do IVS não carregam nosso
+`recordingId`), ainda encontrar a gravação certa mesmo que o `Session End` já tenha
+disparado. **Gap residual aceito, não corrigido:** se uma notificação for entregue
+com atraso extremo (a AWS documenta "horas" como possível) depois que uma gravação
+nova já tiver alcançado o MESMO status esperado pela guarda
+(`statusesThatCanTransitionTo`), o evento atrasado poderia, em tese, ser aplicado à
+gravação errada. A guarda de `event_time`/status reduz a janela mas não a
+elimina — não há, nos payloads reais confirmados, nenhum campo que correlacione
+univocamente um evento a um `recordingId` nosso. Registrado como risco aceito, não
+como bug — coerente com "entrega best-effort" já ser a premissa de toda esta seção.
+
+### 12.3 Decisão (b) — presença (padrão #12), chaveada por `liveParticipantId`
+
+Implementada em `Attendance` (`PK=LIVE#{liveId}`, `SK=ATTENDANCE#{liveParticipantId}`)
+e `AttendanceRepository`, chamada de dentro de `ConnectToLiveUseCase`
+(`markPresent`, upsert num único `UpdateItem` — `joinedAt = if_not_exists(joinedAt,
+:at)` preserva a primeira entrada, `lastSeenAt` sempre atualiza) e
+`DisconnectFromLiveUseCase` (`markLeft`, best-effort). Nunca chaveada por
+`connectionId` nem por `participantId` do IVS — exatamente a invariante já
+registrada na seção 10.8, agora com código: uma reconexão (novo `connectionId`,
+mesmo `liveParticipantId`) atualiza o MESMO registro de presença, não cria um novo.
+Testado (`connect-to-live.test.ts`, "marks attendance keyed by liveParticipantId"):
+duas conexões com `connectionId` diferentes para o mesmo aluno resultam em um único
+registro de `Attendance`.
+
+### 12.4 Decisão (c) — máquina de estados de `Recording` e seus dois casos críticos
+
+`RecordingStatus`: `PENDING → STARTING → RECORDING → PROCESSING → READY → HIDDEN`,
+com `FAILED` alcançável de qualquer estado não-terminal (`canTransitionRecordingStatus`,
+`src/domain/value-objects/RecordingStatus.ts`). `HIDDEN` só a partir de `READY`, via
+ação humana (`hide`), nunca por evento do EventBridge.
+
+`RecordingRepository.applyEvent` combina DUAS guardas na mesma `ConditionExpression`
+condicional do DynamoDB — não uma OU outra:
+
+1. `event_time` mais recente que o `lastEventTime` já registrado (ordem).
+2. Status atual pertence a `statusesThatCanTransitionTo(alvo)` (máquina de estados).
+
+**Evento duplicado:** a mesma notificação chega duas vezes (entrega
+"at-least-once" do EventBridge). A segunda chamada tem o MESMO `event_time` da
+primeira — `lastEventTime < event_time` falha (não é estritamente menor) —
+descartada (`'stale'`), nunca reprocessada. Testado contra fake
+(`handle-ivs-composition-state-change-event.test.ts`, "a duplicate Session End...")
+e contra DynamoDB Local (`dynamodb-recording-repository.test.ts`, "applyEvent
+rejeita um evento duplicado").
+
+**Evento fora de ordem:** um evento com `event_time` mais ANTIGO chega depois de um
+mais novo já aplicado (a AWS documenta isso explicitamente — "you could see
+Participant Unpublished before Participant Published"). A guarda de `event_time`
+rejeita mesmo que o status-alvo fosse tecnicamente uma transição válida partindo do
+status atual — testado nos dois níveis: fake (`"an out-of-order Session Start
+arriving AFTER Session End..."`, `"...Session Failure with an OLDER event_time..."`)
+e DynamoDB Local (`"applyEvent rejeita um evento fora de ordem"`, e um teste de
+concorrência real — duas chamadas simultâneas para a mesma transição, só uma
+vence, provando que a `ConditionExpression` é atômica de verdade, não uma checagem
+em memória da aplicação).
+
+### 12.5 Playback — CloudFront assinado, TTL curto
+
+`CloudFrontSigningService` (`@aws-sdk/cloudfront-signer`) busca a chave privada do
+Secrets Manager uma vez por runtime (cache em memória do processo, mesmo padrão de
+`getDocumentClient`) e assina com `getSignedUrl`. TTL de 15 minutos
+(`PLAYBACK_URL_TTL_MINUTES`, `get-recording-playback.ts`) — curto de propósito: é a
+janela de validade do LINK, não da sessão de estudo; o player reabre uma URL nova ao
+expirar. `GetRecordingPlaybackUseCase` só assina se `status === 'READY' AND
+visibility === 'PUBLISHED'` — nem "ainda processando" nem "professor escondeu"
+deveriam vazar a existência de um manifesto. Matrícula/dono de turma: mesma checagem
+de `JoinLiveUseCase` (assistir ao replay exige o mesmo vínculo que assistir ao vivo).
+
+`manifestPath`/`cloudFrontPath` guardam o mesmo valor (CloudFront serve o bucket 1:1
+via OAC, sem remapeamento) — os dois campos existem só porque a seção 7 do README
+pede ambos explicitamente.
+
+### 12.6 CDK — o que mudou de verdade
+
+Quase nada, porque a Fase 3 já tinha construído a infraestrutura certa. Único ajuste
+real: `ApiStackProps.cloudFrontSigningSecretArn: string` virou
+`cloudFrontSigningSecret: secretsmanager.ISecret` (a função Next.js precisa de
+`secretsmanager:GetSecretValue` em runtime para assinar URLs de playback —
+`grantRead`, não só o ARN como string) e uma variável de ambiente nova
+(`APP_ENV`) no `ivsEventConsumer` (`event-bus-stack.ts`), necessária para montar
+`tags: { Environment }` no `StartComposition` — sem ela, a Condition de IAM que
+protege `GetComposition`/`StopComposition` (já documentada como fail-safe
+deliberado desde a Fase 3) derrubaria toda chamada seguinte com `AccessDenied`.
+
+### 12.7 O que ficou fora desta fase, registrado, não esquecido
+
+- **Concatenação de gravações fragmentadas** (decisão 12.2) — possível melhoria
+  futura, não implementada.
+- **`AuditEvent`** (seção 9 do README, "toda alteração sensível deve gerar
+  auditoria") — entidade mínima listada no README, mas não pedida explicitamente
+  para esta fase; publish/hide/start/finish continuam sem trilha de auditoria própria.
+- **Rotas HTTP de verdade** (`POST /recordings/{id}/publish`, `/hide`,
+  `GET .../playback`, `GET /courses/{id}/recordings`) — os use-cases existem e
+  estão testados, mas não há `route.ts` do Next.js chamando-os ainda; mesma
+  pendência já registrada para `JoinLiveUseCase` desde a Fase 5/6, fica para a
+  Fase 8 (painel web), quando a camada HTTP for construída de verdade.
