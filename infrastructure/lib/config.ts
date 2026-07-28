@@ -23,6 +23,28 @@ export interface EnvironmentConfig {
    * limiter em DynamoDB).
    */
   readonly reactionRouteThrottle: { readonly rateLimit: number; readonly burstLimit: number };
+  /**
+   * Teto absoluto da validade do cookie assinado de playback (GetRecordingPlaybackUseCase,
+   * Fase 7) — a validade real é `duração da gravação + margem`, mas nunca passa
+   * disto, mesmo para uma aula de muitas horas. Ver docs/fase-1-arquitetura.md, seção
+   * 13 (ponto de revisão sobre TTL fixo vs. duração da gravação).
+   */
+  readonly playbackCookieMaxTtlMinutes: number;
+  /**
+   * Retenção de gravações no S3 (seção 14 do README — "política de retenção para
+   * mensagens e gravações"). Produção nunca expira objetos automaticamente (só
+   * transiciona para classes de armazenamento mais baratas) — decisão de produto,
+   * não técnica: uma universidade normalmente quer manter aulas gravadas
+   * indefinidamente, só economizando em storage "frio" com o tempo.
+   */
+  readonly recordingsRetention: {
+    readonly transitionToInfrequentAccessAfterDays: number;
+    readonly transitionToGlacierAfterDays: number;
+    readonly expirationAfterDays?: number;
+  };
+  /** Retenção de mensagens de chat via TTL do DynamoDB (mesma exigência da seção 14).
+   * Dias corridos desde `createdAt`. */
+  readonly chatMessageRetentionDays: number;
 }
 
 const ENVIRONMENT_CONFIGS: Record<EnvironmentName, EnvironmentConfig> = {
@@ -33,6 +55,13 @@ const ENVIRONMENT_CONFIGS: Record<EnvironmentName, EnvironmentConfig> = {
     logRetention: RetentionDays.ONE_WEEK,
     chatShardCount: 2,
     reactionRouteThrottle: { rateLimit: 10, burstLimit: 20 },
+    playbackCookieMaxTtlMinutes: 360,
+    recordingsRetention: {
+      transitionToInfrequentAccessAfterDays: 30,
+      transitionToGlacierAfterDays: 90,
+      expirationAfterDays: 180,
+    },
+    chatMessageRetentionDays: 7,
   },
   staging: {
     envName: 'staging',
@@ -41,6 +70,13 @@ const ENVIRONMENT_CONFIGS: Record<EnvironmentName, EnvironmentConfig> = {
     logRetention: RetentionDays.ONE_MONTH,
     chatShardCount: 4,
     reactionRouteThrottle: { rateLimit: 100, burstLimit: 200 },
+    playbackCookieMaxTtlMinutes: 360,
+    recordingsRetention: {
+      transitionToInfrequentAccessAfterDays: 30,
+      transitionToGlacierAfterDays: 90,
+      expirationAfterDays: 365,
+    },
+    chatMessageRetentionDays: 30,
   },
   production: {
     envName: 'production',
@@ -49,6 +85,14 @@ const ENVIRONMENT_CONFIGS: Record<EnvironmentName, EnvironmentConfig> = {
     logRetention: RetentionDays.SIX_MONTHS,
     chatShardCount: 16,
     reactionRouteThrottle: { rateLimit: 300, burstLimit: 600 },
+    playbackCookieMaxTtlMinutes: 720,
+    recordingsRetention: {
+      transitionToInfrequentAccessAfterDays: 90,
+      transitionToGlacierAfterDays: 365,
+      // Sem expirationAfterDays: produção mantém gravações indefinidamente, só
+      // migrando para storage mais barato com o tempo.
+    },
+    chatMessageRetentionDays: 180,
   },
 };
 
@@ -87,6 +131,20 @@ export function buildPlatformTags(envName: EnvironmentName, institution: string)
     managedBy: 'aws-cdk',
     costCenter: `edu-platform-${envName}`,
   };
+}
+
+/**
+ * Nome do EventBridge bus de eventos internos da aplicação — determinístico (não é um
+ * token gerado pelo CDK), por isso `ApiStack` pode montar o mesmo valor sem precisar de
+ * uma referência cross-stack ao construct `events.EventBus` de `EventBusStack`. Isso
+ * importa: `ApiStack` já criou o bucket de gravações usado pela distribuição
+ * CloudFront (behavior `/media/*` com Origin Access Control), e `IvsStack`/`EventBusStack`
+ * dependem desse bucket — uma referência de volta de `ApiStack` para `EventBusStack`
+ * fecharia um ciclo (Api -> EventBus -> Ivs -> Api). Usar o nome como string simples
+ * quebra esse ciclo pela raiz.
+ */
+export function platformEventBusName(envName: EnvironmentName): string {
+  return `platform-events-${envName}`;
 }
 
 export function applyPlatformTags(stack: Stack, tags: PlatformTags): void {

@@ -1503,3 +1503,381 @@ deliberado desde a Fase 3) derrubaria toda chamada seguinte com `AccessDenied`.
   estão testados, mas não há `route.ts` do Next.js chamando-os ainda; mesma
   pendência já registrada para `JoinLiveUseCase` desde a Fase 5/6, fica para a
   Fase 8 (painel web), quando a camada HTTP for construída de verdade.
+
+## 13. Ponto de revisão pós-Fase-7: playback quebrado, TTL, autorização e retenção
+
+### 13.1 CRÍTICO — o playback não tocava. Confirmado, não hipotético.
+
+`GetRecordingPlaybackUseCase` assinava uma URL ÚNICA (`getSignedUrl`, o manifesto
+`.m3u8`). Um HLS é o manifesto MAIS N segmentos (`.ts`/`.m4s`) em URLs próprias, que
+o player busca depois de ler o manifesto. A distribuição CloudFront
+(`storage-stack.ts`) tem `trustedKeyGroups` no `defaultBehavior` — TODA requisição à
+distribuição, inclusive cada segmento, exige assinatura válida. Uma URL assinada
+autoriza só o recurso exato para o qual foi gerada; os segmentos, em URLs
+diferentes, chegavam sem nenhuma assinatura e levavam 403 do CloudFront. Era o caso
+(b) descrito no ponto de revisão: manifesto carrega, todo segmento falha, o replay
+não toca. Confirmado por leitura de código, não por suposição.
+
+**Corrigido para cookies assinados com policy customizada:**
+
+- `CloudFrontSigningServicePort.signCookiesForPrefix` — recebe um
+  `resourceUrlPattern` (`https://{domain}/{s3Prefix}/*`, wildcard) e monta a policy
+  JSON à mão (`Statement[0].Resource` = o padrão, `Condition.DateLessThan`) — o
+  helper `getSignedCookies` do `@aws-sdk/cloudfront-signer` só monta policy
+  "canned" (uma URL exata) quando se usa o atalho `dateLessThan`; para wildcard, a
+  policy tem que ser fornecida explicitamente.
+- **Escopo é sempre o prefixo da gravação, nunca o domínio inteiro** — os três
+  cookies (`CloudFront-Policy`, `CloudFront-Signature`, `CloudFront-Key-Pair-Id`)
+  têm nomes fixos; se a policy cobrisse o domínio todo, um aluno autorizado a UMA
+  aula assistiria a QUALQUER gravação do domínio. `s3Prefix` (já capturado em
+  `Recording` na criação da composição, seção 12.2) é único por gravação — o
+  wildcard `{s3Prefix}/*` cobre exatamente o manifesto e os segmentos daquela
+  composição, nada além.
+- `GetRecordingPlaybackUseCase` devolve `{manifestUrl, cookies, cookiePath,
+  expiresAt}` — `manifestUrl` sem assinatura própria (a autorização é 100% dos
+  cookies), `cookiePath` (`/{s3Prefix}/`) para o handler HTTP (Fase 8, ainda não
+  implementado) usar como atributo `Path` do `Set-Cookie` — reforço de higiene no
+  navegador, a garantia de segurança real é a policy no CloudFront, não o `Path` do
+  cookie. O handler HTTP que vier a gravar esses cookies precisa setar `Secure`,
+  `HttpOnly` e `SameSite` adequado (`Strict` ou `Lax` — nenhum motivo para
+  `None` aqui, o player consome do mesmo site) — registrado como requisito para
+  quem implementar essa rota na Fase 8, já que o use-case em si não tem acesso a
+  cabeçalhos HTTP.
+- `GET /recordings/{recordingId}/playback` continua sendo o único ponto que decide
+  emitir ou não — nada muda no desenho de autorização já existente, só o que é
+  devolvido no final.
+
+### 13.2 TTL do cookie — duração da gravação + margem, com piso e teto
+
+TTL fixo (antes, 15min) expira no meio de uma gravação de 2h. Agora:
+`ttlMinutes = clamp(duração da gravação em minutos + 10min de margem, piso de
+15min, teto configurável por ambiente)`. O piso deliberadamente é MAIOR que a
+margem sozinha (15 > 10): para uma gravação de poucos minutos, ou sem
+`durationSeconds` ainda registrado, é o piso que domina, não a margem — evita um
+cookie de validade artificialmente curta por causa de uma gravação test/curta.
+`maxTtlMinutes` (constructor do use-case, `PLAYBACK_COOKIE_MAX_TTL_MINUTES` no
+schema de env/`.env.example`, `playbackCookieMaxTtlMinutes` por ambiente em
+`infrastructure/lib/config.ts` — 360min/6h em dev e staging, 720min/12h em
+produção) é o teto absoluto, mesmo para uma aula de muitas horas.
+
+### 13.3 Autorização do replay — casos da seção 17, todos testados
+
+Confirmados com teste próprio (`tests/unit/application/use-cases/get-recording-playback.test.ts`,
+describe "autorização"):
+
+| Caso | Resultado |
+| --- | --- |
+| Aluno de outra instituição | `404 RESOURCE_NOT_FOUND` (mesma resposta de "não existe") |
+| Aluno não matriculado, mesma instituição | `404 RESOURCE_NOT_FOUND` (idêntico ao de cima) |
+| Professor de outra turma, mesma instituição | `403 CLASS_NOT_OWNED` |
+| Gravação não `READY` | `409 RECORDING_NOT_AVAILABLE` |
+| Gravação `READY` mas não `PUBLISHED` | `409 RECORDING_NOT_AVAILABLE` |
+| Gravação `HIDDEN`, ALUNO | `409 RECORDING_NOT_AVAILABLE` |
+| Gravação `HIDDEN`, professor dono ou ADMIN | **permitido** |
+
+A última linha é uma regra nova desta revisão: `HIDDEN` deixou de bloquear
+incondicionalmente. Ocultar é uma ação de visibilidade para a turma, não uma
+trava sobre o próprio autor revisar o conteúdo — o professor dono (ou ADMIN)
+continua conseguindo assistir/revisar uma gravação que ele mesmo ocultou;
+`ALUNO` continua bloqueado (mesmo código genérico de "não disponível", não um
+código que revele que existe uma versão oculta).
+
+### 13.4 Retenção — seção 14 do README, estava faltando
+
+**Gravações (S3):** `lifecycleRules` no bucket (`api-stack.ts`, ver seção 13.6 sobre
+por que o bucket vive lá e não em uma stack própria), por ambiente
+(`infrastructure/lib/config.ts`, `recordingsRetention`): transição para
+`STANDARD_IA` e depois `GLACIER_INSTANT_RETRIEVAL` sempre (correção da seção 13.6 —
+a versão original usava `GLACIER`/Flexible Retrieval, que quebraria o replay);
+expiração automática só em dev (180 dias) e staging (365 dias) — **produção não
+expira objetos automaticamente**, decisão de produto (uma universidade normalmente
+quer manter aulas gravadas indefinidamente), só migra para armazenamento mais
+barato com o tempo.
+
+**Mensagens de chat (DynamoDB):** `ttl` gravado em `DynamoDbChatMessageRepository.save`
+(`chatMessageRetentionDays` por ambiente — 7 dias em dev, 30 em staging, 180 em
+produção — injetado via `CHAT_MESSAGE_RETENTION_DAYS`). A tabela já tinha
+`timeToLiveAttribute: 'ttl'` configurado desde a Fase 3 (reaproveitado por
+`WebSocketConnection`/rate limiter/ticket de conexão); só faltava o chat também
+escrever esse atributo.
+
+Nenhum valor fixo no código — tudo parametrizado por ambiente, como os demais
+(`chatShardCount`, `reactionRouteThrottle`).
+
+### 13.5 Nota para a Fase 8 — gravações fragmentadas no painel
+
+A decisão do auto-shutdown (seção 12.2): uma queda de rede do professor por mais
+de 60s vira DUAS gravações (dois `recordingId`, dois ciclos de
+publish/hide), não uma só. Consequência de produto, registrada aqui, resolvida na
+Fase 8: o painel do professor precisa agrupar gravações da MESMA aula (mesmo
+`liveId`) visualmente — algo como "Aula X — parte 1, parte 2" — em vez de listar
+como aulas desconexas, e deixar claro que cada parte precisa de publish/hide
+independente. Não implementado agora; só a modelagem de dados (`Recording.liveId`)
+já suporta o agrupamento quando a Fase 8 construir a tela.
+
+### 13.6 Segunda rodada de revisão: classe de Glacier, topologia do cookie, dependência circular de stack
+
+Três problemas de infraestrutura encontrados antes de liberar a Fase 8, nenhum
+hipotético — todos confirmados por leitura de código/doc antes de corrigir.
+
+**(a) `s3.StorageClass.GLACIER` é Flexible Retrieval, não Instant Retrieval.**
+Confirmado no próprio doc do CDK (`aws-s3/lib/rule.d.ts`): `GLACIER` "pode levar
+entre minutos e horas para acessar"; um objeto nessa classe exige `RestoreObject`
+antes que o CloudFront consiga servi-lo — o replay de qualquer gravação que já
+tivesse transicionado quebraria silenciosamente, só perceptível quando alguém
+pedisse uma aula antiga. Corrigido para `GLACIER_INSTANT_RETRIEVAL` ("pode ser
+acessado em poucos milissegundos", mesmo doc) — CloudFront serve normalmente, sem
+restore. Mínimo de cobrança confirmado: Standard-IA 30 dias, Glacier Instant
+Retrieval 90 dias — os limiares de `recordingsRetention` (config.ts) já respeitam
+isso. Objetos abaixo de 128 KB: confirmado via doc oficial da AWS que, desde
+set/2024, esse é o comportamento DEFAULT do S3 para TODAS as classes de destino
+(antes só afetava IA/Intelligent-Tiering) — um objeto pequeno simplesmente não
+transiciona. Efeito real aqui: só o manifesto `.m3u8` (poucos KB) fica parado em
+Standard para sempre — aceitável, pois é pequeno e está no caminho crítico de toda
+reprodução. Os segmentos HLS, que concentram o volume real de bytes, ficam bem
+acima do limiar com o encoder de 2.5 Mbps (`ivs-stack.ts`) — a regra não fica
+parcialmente inerte para o que importa.
+
+**(b) Cookie assinado do CloudFront era de terceiros para o navegador do aluno.**
+A versão anterior tinha DUAS distribuições CloudFront: uma para o painel/API
+(`ApiStack.appDistribution`) e outra só para o bucket de gravações
+(`StorageStack.mediaDistribution`), com domínios `*.cloudfront.net` diferentes.
+Um cookie assinado é setado no domínio de quem o emite — com dois domínios, o
+cookie de playback seria third-party para quem acessa o painel: Safari bloqueia
+por padrão, Chrome também vem endurecendo. O teste servidor-a-servidor passava; o
+navegador real do aluno falharia. Corrigido unificando em UMA distribuição
+(`ApiStack.appDistribution`): o painel/API continua no `defaultBehavior` (sem
+assinatura), e o bucket de gravações passou a ser servido por um
+`additionalBehaviors['media/*']` na MESMA distribuição, com `trustedKeyGroups`
+escopado só a esse path — o cookie passa a ser first-party. Como as chaves do
+IVS na composição (`s3Prefix`) não incluem esse prefixo `/media`, uma
+`cloudfront.Function` (edge, JS, sub-milissegundo — não Lambda@Edge) remove o
+prefixo do `request.uri` antes de encaminhar ao S3 (`VIEWER_REQUEST`).
+
+**(c) Dependência circular de CloudFormation ao unificar as distribuições.**
+`S3BucketOrigin.withOriginAccessControl()` — usado para o `origin` do behavior
+`/media/*` — adiciona automaticamente uma bucket policy que restringe o acesso ao
+ARN da distribuição específica (é assim que o Origin Access Control funciona:
+sem essa condição, qualquer distribuição com OAC na conta poderia ler o bucket).
+Essa policy fica anexada ao BUCKET. Enquanto bucket e distribuição viviam em
+stacks diferentes (`StorageStack`/`ApiStack`), isso criava uma dependência
+`Storage -> Api` (a policy do bucket precisa do ARN da distribuição) ao mesmo
+tempo que já existia `Api -> Storage` (a distribuição precisa do bucket como
+origin, e das chaves de assinatura) — um ciclo real, detectado pelo próprio
+`cdk synth` (`«DependencyCycle»`), não um erro de sintaxe. Não é uma
+peculiaridade deste projeto: é uma restrição estrutural do OAC cross-stack.
+Único jeito correto de resolver: bucket, chaves de assinatura (`PublicKey`,
+`KeyGroup`, o `Secret` da chave privada) e a distribuição na MESMA stack —
+`StorageStack` foi eliminada e seu conteúdo movido para dentro de `ApiStack`
+(ver doc do construct em `infrastructure/stacks/api-stack.ts`). `IvsStack`
+continua referenciando `ApiStack.recordingsBucket` sem problema: o IVS ajusta a
+policy do bucket via seu próprio control plane em runtime (confirmado na doc
+oficial), não via CloudFormation — referência unidirecional, nunca um ciclo.
+
+Consequência na ordem de construção (`infrastructure/bin/app.ts`): `ApiStack`
+agora é criada antes de `IvsStack`/`EventBusStack` (precisa existir primeiro,
+pois ambas dependem transitivamente do bucket). Isso por sua vez exigiu cortar a
+única referência que ia na direção contrária: `ApiStack` lia
+`EventBusStack.appEventBus` (construct) só para montar a env var
+`EVENTBRIDGE_BUS_NAME` — nada publica nesse bus ainda. Como o nome do bus é
+determinístico (`platform-events-{env}`, não um token gerado), `ApiStack` passou
+a montar o mesmo nome via `platformEventBusName()` (`infrastructure/lib/config.ts`)
+sem precisar de uma referência cross-stack ao construct — quebra o ciclo
+`Api -> EventBus -> Ivs -> Api` pela raiz, e não só o ciclo do OAC.
+
+**(d) Consequência para a aplicação — sem `CLOUDFRONT_DOMAIN_NAME` fixo.**
+Antes de resolver (b)/(c), uma tentativa intermediária injetava o domínio da
+distribuição unificada como env var da Lambda `next-server`
+(`CLOUDFRONT_DOMAIN_NAME: appDistribution.distributionDomainName`) — mas isso
+fecha OUTRO ciclo, agora dentro da mesma stack: a Lambda precisa existir antes do
+`HttpApi` (que a integra), o `HttpApi` precisa existir antes da `Distribution`
+(que o usa como origin), e a env var faria a Lambda depender da própria
+`Distribution` que depende dela (Lambda -> Distribution -> HttpApi -> Lambda).
+Resolvido removendo a env var: `GetRecordingPlaybackInput` passou a receber
+`appDomainName` POR CHAMADA, lido do header `Host` da requisição HTTP recebida
+(pela rota da Fase 8, ainda não implementada) — funciona com qualquer domínio
+(inclusive um custom domain futuro) e não é uma referência de deploy-time a
+resource nenhum.
+
+## 14. Fase 8 — painel web do professor
+
+Escopo da seção 13 do README. Quatro bloqueadores resolvidos antes das telas
+(pedidos explicitamente pelo ponto de revisão desta fase), depois o painel em si.
+
+### 14.1 Cognito — Hosted UI + Authorization Code, `appDomainName` como context value
+
+`CognitoStack` (`infrastructure/stacks/cognito-stack.ts`) ganhou um domínio Hosted UI
+(`userPool.addDomain`, prefixo `{institution}-{env}-live-classes` — namespace GLOBAL
+do Cognito entre todas as contas AWS, por isso leva instituição+ambiente) e OAuth
+Authorization Code no `panelClient` (scopes `openid email profile`). O painel é um
+BFF: o `code` é trocado por tokens no SERVIDOR Next.js (`app/api/auth/callback`),
+nunca no navegador — sem SRP no browser, sem tela de login própria.
+
+**`callbackUrls`/`logoutUrls` — problema do "ovo e da galinha" resolvido com context
+value, não Custom Resource.** O domínio da distribuição CloudFront só existe DEPOIS
+que `ApiStack.appDistribution` é criado, mas `CognitoStack` é uma stack diferente e
+JÁ é uma dependência de `ApiStack` (que precisa do `userPool`/`panelClient`) — uma
+referência de CONSTRUCT de volta (`CognitoStack` lendo
+`apiStack.appDistribution.distributionDomainName`) fecharia um ciclo real de
+CloudFormation, a MESMA classe de bug já corrigida na revisão pós-Fase-7 (seção
+13.6). Resolvido com `appDomainName` como CONTEXT VALUE (string simples, via
+`--context appDomain=...`), nunca uma referência de stack: primeiro deploy só
+habilita `http://localhost:3000/...`; um `CfnOutput` (`AppDistributionDomainName`)
+expõe o domínio real depois do primeiro deploy, para um redeploy subsequente
+habilitar produção também. 100% declarativo — sem Lambda de custom resource, sem
+`UpdateUserPoolClient` imperativo, sem risco de sobrescrever configuração parcial.
+
+O client secret do `panelClient` nunca é gerado nem lido pelo CDK: a Lambda busca
+via `cognito-idp:DescribeUserPoolClient` em runtime (só o ARN do USER POOL entra na
+policy IAM — Cognito Identity Provider não define ARN por client, só por pool),
+mesma filosofia da chave privada do CloudFront e do secret de sessão (SHA-256 do
+valor de um Secrets Manager gerado automaticamente — `SessionSecret`, JWE via
+`jose`, nunca só assinado: o cookie de sessão carrega o `refresh_token` do Cognito,
+um credential real).
+
+**Cliente MOBILE inalterado** — sem OAuth, continua SRP direto (app nativo, sem
+redirect de navegador). Ver `docs/ios-integration.md`.
+
+### 14.2 JWT authorizer só em `/api/v1/*` — duas superfícies de auth na MESMA HttpApi
+
+`ApiStack.httpApi` ganhou uma rota explícita `/api/v1/{proxy+}` com
+`HttpUserPoolAuthorizer` (aceita tokens de QUALQUER client do pool — painel ou o
+futuro app iOS), preservando o `defaultIntegration` (catch-all, sem authorizer) para
+as páginas do painel. Um authorizer no nível da API inteira derrubaria as páginas
+(que autenticam por cookie de sessão, não Bearer) antes mesmo do `proxy.ts` rodar —
+por isso o authorizer vive só na rota `/api/v1/*`, nunca em `/{proxy+}`.
+
+Rotas `/api/v1/*` REVALIDAM o Bearer internamente (`aws-jwt-verify`,
+`CognitoJwtVerifier`, `tokenUse: 'access'`) — defesa em profundidade, nunca confiam
+só no authorizer do API Gateway.
+
+### 14.3 Assets estáticos do OpenNext — escopo mínimo, `/_next/static/*`
+
+Bucket S3 dedicado (`StaticAssetsBucket`) + `BucketDeployment` sincronizando
+`.open-next/assets/_next/static` no próprio `cdk deploy` (cache-control
+`public, max-age=31536000, immutable` — seguro porque cada arquivo tem hash de
+conteúdo no nome, nunca reescrito) + um behavior `/_next/static/*` na distribuição
+unificada. Deixados de fora, registrados: otimização de imagem (`_next/image*`,
+precisaria da função `image-optimization-function` do OpenNext), fila de
+revalidação ISR (esta app não usa `revalidate` ainda) e o warmer (latência, não
+corretude). `favicon.ico`/`*.svg`/`BUILD_ID` caem no catch-all da Lambda — não
+impedem o painel de carregar, só os chunks de `_next/static` são o caminho crítico.
+
+### 14.4 `proxy.ts`, não `middleware.ts` — Next.js 16 renomeou o arquivo
+
+Confirmado em `node_modules/next/dist/docs` (AGENTS.md manda ler antes de
+escrever, por causa de mudanças exatamente como esta): a partir do Next.js 16,
+"Middleware" foi renomeado para "Proxy" — o arquivo de convenção é `proxy.ts`
+(`src/proxy.ts` aqui), exportando uma função `proxy`, não mais `middleware.ts`/
+`middleware()` (deprecado, não seria nem reconhecido nesta versão).
+
+**Runtime Node já é o padrão, sem opção de Edge para desconfigurar.** Doc oficial:
+"Proxy defaults to using the Node.js runtime. The `runtime` config option is not
+available in Proxy files. Setting the `runtime` config option in Proxy will throw
+an error." Ou seja, o requisito "middleware roda em Node, não edge" já vem
+satisfeito por padrão nesta versão — não há `runtime: 'nodejs'` para configurar (e
+configurar geraria erro). `src/proxy.ts` faz só uma checagem OTIMISTA (cookie de
+sessão presente ou não — nunca decripta o JWE nem consulta o `UserProfile` aqui);
+a verificação de verdade é sempre em `getAuthenticatedContext` (Server
+Components/Actions/Route Handlers), nunca só no proxy — mesmo aviso da doc oficial
+de autenticação do Next ("Proxy... should not be used as a full session management
+or authorization solution").
+
+### 14.5 Duas superfícies de API: Server Actions (painel) vs. `/api/v1/*` (iOS)
+
+O painel web NÃO chama `/api/v1/*` para suas próprias mutações — usa Server Actions
+(`src/web/actions/`), que rodam no servidor e chamam os use-cases DIRETO, sem round-
+trip HTTP (recomendação do próprio guia de autenticação do Next: preferir acesso
+direto a dados no servidor a um Route Handler quando o consumidor é a própria app).
+`/api/v1/*` (Bearer JWT) é o contrato PÚBLICO — para o app iOS e qualquer cliente
+externo, documentado em `docs/openapi.yaml`.
+
+Isso não é só estilo: um Bearer-JWT authorizer no API Gateway é estruturalmente
+incompatível com sessão de cookie no navegador (o authorizer roda ANTES da Lambda —
+não há como injetar um header a partir de um cookie ali, `proxy.ts` só executa
+DEPOIS que a requisição já passou pelo authorizer). Onde o painel precisa de uma
+chamada `fetch()` do NAVEGADOR mesmo assim (loop de refresh de token do estúdio,
+reconexão do WebSocket), existe um espelho interno sob `/api/panel/*` — mesmos
+use-cases, autenticado por sessão de cookie (`getAuthenticatedContextForFetch`,
+nunca `redirect()`: uma chamada `fetch` não navega, só receberia uma resposta de
+redirect opaca), fora de `/api/v1/*` (sem JWT authorizer do API Gateway).
+
+### 14.6 Estúdio — Web Broadcast SDK, `exchangeToken`, e o mito do "token de 20min"
+
+`src/web/studio/StudioClient.tsx`: teste de câmera/microfone via
+`getUserMedia` (preview antes de publicar), `Stage`/`LocalStageStream`/
+`StageStrategy` do pacote `amazon-ivs-web-broadcast` (API confirmada lendo o
+`.d.ts` do pacote instalado, não assumida).
+
+**Ponto de revisão factual:** o pedido desta rodada afirmava que a duração padrão
+do participant token do IVS é 20min. Verificado em DUAS fontes independentes — a
+doc oficial (`API_CreateParticipantToken.html`, buscada ao vivo: "Default: 720 (12
+hours)") e um comentário JÁ EXISTENTE neste código desde a Fase 5/6
+(`participant-token-attributes.ts`: "confirmado em CreateParticipantToken... default
+720 (12h)") — e as duas concordam: o default é 720min (12h), não 20min. Isso não
+muda a necessidade do refresh (a duração usada aqui é 180min, deliberadamente menor
+que o default — ver `JoinLiveUseCase`/`RefreshParticipantTokenUseCase` — e uma aula
+pode superar 180min de qualquer forma), só corrige a premissa numérica.
+
+`RefreshParticipantTokenUseCase` (`POST /api/v1/lives/{liveId}/token/refresh` e o
+espelho `/api/panel/...`) reemite o token nas MESMAS capabilities (nunca eleva a
+PUBLISH — isso é só `PromoteParticipantUseCase`) e nunca desconecta ninguém (isso é
+só `DemoteParticipantUseCase`). No cliente, `Stage.exchangeToken(newToken)` (método
+real do SDK, confirmado no `.d.ts`: "Exchanges the current stage token for a new
+one... without disconnecting from the stage") aplica o token novo sem derrubar a
+publicação — exatamente o requisito pedido. `StudioClient` agenda a renovação
+10min antes de `expiresAt` (margem generosa frente aos 180min de validade).
+
+### 14.7 Cliente WebSocket — jitter de reconexão, contrato da seção 10.9, agora implementado
+
+`src/web/realtime/use-live-connection.ts` implementa o que a seção 10.9 registrou
+como "contrato do cliente, não código deste repositório": heartbeat (`ping`) a cada
+4min (folga sobre o timeout de 10min, fixo), reconexão preventiva num ponto
+aleatório entre 1h45–1h55 (nunca depois de 2h, fixo), abrindo a conexão NOVA antes
+de fechar a velha (evita janela sem WebSocket), e `sync.resume` com o timestamp do
+último evento recebido. Reconexão pede um ticket novo via
+`POST /api/panel/lives/{liveId}/realtime/ticket` — nunca `/join` de novo (gastaria a
+cota fixa de `CreateParticipantToken`, o mesmo pico que a Fase 5/9 já mitigaram).
+
+### 14.8 Modelagem — `LiveSession.description` e edição de detalhes
+
+Seção 13 do README pede editar "título, descrição, disciplina e horário".
+"Disciplina" não é editável — é a turma/curso à qual a live já pertence (`classId`
+é imutável após a criação; trocar de turma é um escopo bem maior, mudaria dono,
+instituição e matrícula). Só título, descrição e horário mudam
+(`UpdateLiveUseCase`, novo `LiveSession.description?: string`, `GSI1SK` recalculado
+no `updateDetails` para refletir o novo `scheduledStartAt`). Só permitido em
+`DRAFT`/`SCHEDULED` — depois que o Stage é provisionado (`WAITING` em diante), a
+aula já está em andamento/prestes a começar.
+
+Duas queries novas para "visualizar próximas aulas" do professor
+(`ListUpcomingLivesForTeacherUseCase`): `ClassGroupRepository.findByTeacher`
+(GSI1, padrão de acesso #3, já existia como índice mas não como método do
+repositório) e `LiveSessionRepository.listByClass` (GSI1, padrão #4, idem). N+1
+(uma query de lives por turma) é aceitável — o número de turmas de um professor é
+pequeno; um índice achatado só se pagaria com uma escala bem maior.
+
+### 14.9 Gravações fragmentadas — agrupamento por `liveId`, implementado
+
+`/courses/{courseId}/recordings` (painel) agrupa as gravações retornadas por
+`ListCourseRecordingsUseCase` por `liveId` — quando o auto-shutdown de 60s (seção
+12.2) fragmenta uma aula em várias gravações, elas aparecem como "Parte 1, Parte
+2..." sob o mesmo cabeçalho, não como aulas desconexas.
+
+### 14.10 O que ficou fora desta fase, registrado, não esquecido
+
+- **UI de perguntas/enquetes/reações no estúdio**: o `StudioClient` expõe um chat
+  simples e um log genérico de eventos WebSocket (`poll.created`,
+  `question.highlighted` etc. aparecem no log, mas sem widgets dedicados de
+  criar/votar enquete ou destacar pergunta na UI). O USE-CASE e a rota WebSocket já
+  existem desde a Fase 6/7 (`create-poll`, `close-poll`, `highlight-question`
+  etc.) — falta só a camada de apresentação dedicada. Registrado por causa do
+  tamanho desta fase, não por dificuldade técnica.
+- **Lista de participantes em tempo real via WebSocket**: `ParticipantsList` (painel)
+  lê `LiveParticipantRepository.listByLive` no carregamento da página (Server
+  Component), não atualiza sozinha quando alguém entra/sai — precisaria assinar o
+  WebSocket também para refletir presença ao vivo sem recarregar a página.
+- **Papel ADMIN no painel**: as páginas de criação de turma/curso/matrícula (fora
+  do escopo de "painel do PROFESSOR" da seção 13) não foram construídas — os
+  use-cases (`CreateClassGroupUseCase`, `EnrollStudentUseCase` etc.) já existiam
+  de fases anteriores e continuam utilizáveis por quem vier a construir essa tela.

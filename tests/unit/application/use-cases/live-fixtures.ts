@@ -81,6 +81,31 @@ export class FakeLiveSessionRepository implements LiveSessionRepository {
     this.store.set(liveId, { ...live, stageArn, updatedAt: new Date().toISOString() });
   }
 
+  async listByClass(classId: string): Promise<readonly LiveSession[]> {
+    return [...this.store.values()].filter((live) => live.classId === classId);
+  }
+
+  async updateDetails(
+    liveId: string,
+    details: { readonly title: string; readonly description?: string; readonly scheduledStartAt: string },
+  ): Promise<void> {
+    const live = this.store.get(liveId);
+    if (!live) {
+      throw new ConflictError(
+        'Não foi possível concluir a operação porque o estado da aula mudou. Tente novamente.',
+        'CONFLICT',
+        `LiveSession ${liveId} not found`,
+      );
+    }
+    this.store.set(liveId, {
+      ...live,
+      title: details.title,
+      ...(details.description !== undefined ? { description: details.description } : {}),
+      scheduledStartAt: details.scheduledStartAt,
+      updatedAt: new Date().toISOString(),
+    });
+  }
+
   async claimActiveRecording(
     liveId: string,
     expectedCurrentRecordingId: string | undefined,
@@ -139,6 +164,10 @@ export class FakeLiveParticipantRepository implements LiveParticipantRepository 
       }
     }
     return null;
+  }
+
+  async listByLive(liveId: string): Promise<readonly LiveParticipant[]> {
+    return [...this.store.values()].filter((participant) => participant.liveId === liveId);
   }
 
   async save(participant: LiveParticipant): Promise<void> {

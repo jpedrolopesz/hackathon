@@ -1,9 +1,10 @@
 import 'server-only';
 import { GetSecretValueCommand, SecretsManagerClient } from '@aws-sdk/client-secrets-manager';
-import { getSignedUrl } from '@aws-sdk/cloudfront-signer';
+import { getSignedCookies } from '@aws-sdk/cloudfront-signer';
 import type {
   CloudFrontSigningServicePort,
-  SignPlaybackUrlInput,
+  SignedPlaybackCookies,
+  SignPlaybackCookiesInput,
 } from '@/application/ports/CloudFrontSigningServicePort';
 
 /**
@@ -24,14 +25,36 @@ export class CloudFrontSigningService implements CloudFrontSigningServicePort {
     this.secretsClient = new SecretsManagerClient({});
   }
 
-  async signUrl(input: SignPlaybackUrlInput): Promise<string> {
+  async signCookiesForPrefix(input: SignPlaybackCookiesInput): Promise<SignedPlaybackCookies> {
     const privateKey = await this.getPrivateKey();
-    return getSignedUrl({
-      url: input.url,
-      keyPairId: this.keyPairId,
-      privateKey,
-      dateLessThan: input.expiresAt.toISOString(),
+    // Custom policy com `Resource` em wildcard — é isso que autoriza o manifesto E
+    // todos os segmentos do prefixo da gravação numa única assinatura. O helper do
+    // SDK só monta policy "canned" (uma URL exata, sem wildcard) quando se passa
+    // `dateLessThan`; para wildcard, a policy tem que ser montada à mão e passada
+    // como `policy`.
+    const policy = JSON.stringify({
+      Statement: [
+        {
+          Resource: input.resourceUrlPattern,
+          Condition: {
+            DateLessThan: { 'AWS:EpochTime': Math.floor(input.expiresAt.getTime() / 1000) },
+          },
+        },
+      ],
     });
+
+    const signed = getSignedCookies({ policy, keyPairId: this.keyPairId, privateKey });
+    // `CloudFront-Policy` só é opcional no tipo por causa da variante "canned"
+    // (dateLessThan sem policy customizada) — como sempre chamamos com `policy`
+    // acima, o SDK sempre devolve os três campos.
+    if (!signed['CloudFront-Policy']) {
+      throw new Error('getSignedCookies did not return CloudFront-Policy for a custom policy.');
+    }
+    return {
+      policy: signed['CloudFront-Policy'],
+      signature: signed['CloudFront-Signature'],
+      keyPairId: signed['CloudFront-Key-Pair-Id'],
+    };
   }
 
   private async getPrivateKey(): Promise<string> {

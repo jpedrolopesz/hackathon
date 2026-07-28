@@ -14,6 +14,7 @@ export interface ScheduleLiveInput {
   readonly liveId: string;
   readonly classId: string;
   readonly title: string;
+  readonly description?: string;
   readonly scheduledStartAt: string;
 }
 
@@ -51,6 +52,7 @@ export class ScheduleLiveUseCase {
       institutionId: classGroup.institutionId,
       teacherId: classGroup.teacherId,
       title: input.title,
+      ...(input.description !== undefined ? { description: input.description } : {}),
       scheduledStartAt: input.scheduledStartAt,
       status: 'SCHEDULED',
       createdAt: now,

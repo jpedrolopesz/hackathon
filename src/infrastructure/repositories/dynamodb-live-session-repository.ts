@@ -40,6 +40,20 @@ export class DynamoDbLiveSessionRepository implements LiveSessionRepository {
     return item ? toLiveSession(item) : null;
   }
 
+  /** Padrão de acesso #4 do README — lives de uma turma, ordenadas por horário (GSI1). */
+  async listByClass(classId: string): Promise<readonly LiveSession[]> {
+    const result = await this.client.send(
+      new QueryCommand({
+        TableName: this.tableName,
+        IndexName: 'GSI1',
+        KeyConditionExpression: 'GSI1PK = :pk',
+        ExpressionAttributeValues: { ':pk': `CLASS#${classId}` },
+      }),
+    );
+
+    return (result.Items ?? []).map(toLiveSession);
+  }
+
   async create(live: LiveSession): Promise<void> {
     await this.client
       .send(
@@ -109,6 +123,34 @@ export class DynamoDbLiveSessionRepository implements LiveSessionRepository {
           `LiveSession ${liveId} attachStage failed: status was not ${expectedStatus} or stageArn was already set`,
         ),
       );
+  }
+
+  async updateDetails(
+    liveId: string,
+    details: { readonly title: string; readonly description?: string; readonly scheduledStartAt: string },
+  ): Promise<void> {
+    const setClause =
+      'SET title = :title, scheduledStartAt = :scheduledStartAt, updatedAt = :now, GSI1SK = :gsi1sk';
+    const updateExpression =
+      details.description !== undefined
+        ? `${setClause}, description = :description`
+        : `${setClause} REMOVE description`;
+
+    await this.client.send(
+      new UpdateCommand({
+        TableName: this.tableName,
+        Key: { PK: `LIVE#${liveId}`, SK: 'METADATA' },
+        UpdateExpression: updateExpression,
+        ConditionExpression: 'attribute_exists(PK)',
+        ExpressionAttributeValues: {
+          ':title': details.title,
+          ':scheduledStartAt': details.scheduledStartAt,
+          ':gsi1sk': `${details.scheduledStartAt}#${liveId}`,
+          ':now': new Date().toISOString(),
+          ...(details.description !== undefined ? { ':description': details.description } : {}),
+        },
+      }),
+    );
   }
 
   async claimActiveRecording(
@@ -195,10 +237,12 @@ function toLiveSession(item: Record<string, unknown>): LiveSession {
 
   const stageArn = item['stageArn'] as string | undefined;
   const activeRecordingId = item['activeRecordingId'] as string | undefined;
+  const description = item['description'] as string | undefined;
 
   return {
     ...base,
     ...(stageArn !== undefined ? { stageArn } : {}),
     ...(activeRecordingId !== undefined ? { activeRecordingId } : {}),
+    ...(description !== undefined ? { description } : {}),
   };
 }

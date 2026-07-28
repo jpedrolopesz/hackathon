@@ -10,6 +10,8 @@ import type { LiveStatus } from '@/domain/value-objects/LiveStatus';
 export interface LiveSessionRepository {
   findById(liveId: string): Promise<LiveSession | null>;
   findByStageArn(stageArn: string): Promise<LiveSession | null>;
+  /** Padrão de acesso #4 do README — lives de uma turma, ordenadas por horário (GSI1). */
+  listByClass(classId: string): Promise<readonly LiveSession[]>;
   create(live: LiveSession): Promise<void>;
   transitionStatus(
     liveId: string,
@@ -17,6 +19,14 @@ export interface LiveSessionRepository {
     nextStatus: LiveStatus,
   ): Promise<void>;
   attachStage(liveId: string, expectedStatus: LiveStatus, stageArn: string): Promise<void>;
+  /** Edição de título/descrição/horário (seção 13 do README) — só chamado pelo
+   * use-case quando a live ainda está em `DRAFT`/`SCHEDULED` (nunca depois que o
+   * Stage já foi provisionado), então não precisa de ConditionExpression por status:
+   * essa regra já foi decidida antes de chegar aqui. */
+  updateDetails(
+    liveId: string,
+    details: { readonly title: string; readonly description?: string; readonly scheduledStartAt: string },
+  ): Promise<void>;
   /**
    * Fase 7 — "reivindica" a gravação ativa da live: só escreve se `activeRecordingId`
    * estiver ausente OU igual a `expectedCurrentRecordingId` (uma gravação anterior já

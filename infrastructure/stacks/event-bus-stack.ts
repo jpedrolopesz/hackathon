@@ -8,6 +8,7 @@ import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as lambdaNodejs from 'aws-cdk-lib/aws-lambda-nodejs';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
 import type { Construct } from 'constructs';
+import { platformEventBusName } from '../lib/config';
 import type { PlatformStackProps } from '../lib/config';
 
 export interface EventBusStackProps extends PlatformStackProps {
@@ -34,7 +35,7 @@ export class EventBusStack extends Stack {
     super(scope, id, props);
 
     this.appEventBus = new events.EventBus(this, 'AppEventBus', {
-      eventBusName: `platform-events-${props.config.envName}`,
+      eventBusName: platformEventBusName(props.config.envName),
     });
 
     const deadLetterQueue = new sqs.Queue(this, 'IvsEventConsumerDlq', {

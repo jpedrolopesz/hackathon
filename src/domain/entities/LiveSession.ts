@@ -14,6 +14,7 @@ export interface LiveSession {
    * toda operação de live só para checar dono da turma (`assertClassOwner`). */
   readonly teacherId: string;
   readonly title: string;
+  readonly description?: string;
   readonly scheduledStartAt: string;
   readonly status: LiveStatus;
   readonly stageArn?: string;

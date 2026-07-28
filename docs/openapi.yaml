@@ -1,0 +1,215 @@
+openapi: 3.0.3
+info:
+  title: Plataforma de Aulas ao Vivo — API v1
+  description: |
+    Contrato da API pública sob `/api/v1/*` (seção 13 do README — preparado para o
+    app iOS; o painel web usa Server Actions internas para as mesmas operações, sem
+    passar por este contrato — ver docs/fase-1-arquitetura.md, seção 15).
+
+    **Autenticação:** `Authorization: Bearer {access_token}` do Cognito em toda
+    chamada (ver docs/ios-integration.md para o fluxo completo). O API Gateway
+    valida o JWT ANTES de chegar à Lambda (JWT authorizer escopado só a
+    `/api/v1/*` — nunca nas páginas do painel); a rota também revalida
+    internamente (defesa em profundidade).
+
+    **Envelope de resposta**, sempre o mesmo formato:
+    - Sucesso: `{ "data": <T>, "meta": { "requestId": string } }`
+    - Erro: `{ "error": { "code": string, "message": string, "details": [], "requestId": string } }`
+
+    `code` é ESTÁVEL entre versões — construa a UI reagindo a ele, nunca a
+    `message` (que é só para exibição, em português).
+  version: '1.0'
+servers:
+  - url: https://{appDomain}/api/v1
+    variables:
+      appDomain:
+        default: exemplo.cloudfront.net
+        description: Domínio da distribuição CloudFront unificada do ambiente.
+security:
+  - bearerAuth: []
+paths:
+  /lives/{liveId}/join:
+    post:
+      summary: Entrar em uma aula (estúdio ou audiência)
+      description: |
+        Emite o participant token do IVS Real-Time (Web Broadcast SDK / IVS iOS
+        Broadcast SDK) e o ticket de conexão do WebSocket. Idempotente — chamar de
+        novo para o mesmo usuário reaproveita o `LiveParticipant` já existente
+        (não cria um segundo registro).
+      parameters:
+        - $ref: '#/components/parameters/liveId'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JoinLiveResponse'
+              example:
+                data:
+                  live: { liveId: 'live-123', status: 'LIVE', title: 'Aula 1' }
+                  participant:
+                    liveParticipantId: '9c3b...'
+                    capabilities: ['SUBSCRIBE']
+                  ivs:
+                    stageArn: 'arn:aws:ivs:us-east-1:123456789012:stage/abc'
+                    participantToken: 'eyJhbGciOi...'
+                    expiresAt: '2026-07-28T15:00:00.000Z'
+                  realtime:
+                    connectionToken: '6c9e...'
+                    expiresAt: '2026-07-28T12:05:00.000Z'
+                meta: { requestId: 'a1b2c3' }
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Live indisponível ou sala ainda sendo preparada (`LIVE_NOT_AVAILABLE`/`STAGE_NOT_PROVISIONED`)
+  /lives/{liveId}/token/refresh:
+    post:
+      summary: Renovar o participant token do IVS sem cair a publicação
+      description: |
+        Chame isto ANTES do `expiresAt` retornado por `/join` (ou pela renovação
+        anterior) — o participant token tem validade de 180min. No lado do
+        cliente, aplique o novo token com o mecanismo de troca do SDK (Web
+        Broadcast SDK: `Stage.exchangeToken(newToken)`; IVS iOS Broadcast SDK:
+        `IVSStage.refreshStrategy`/reconexão equivalente — ver
+        docs/ios-integration.md) para não derrubar a sessão ativa.
+      parameters:
+        - $ref: '#/components/parameters/liveId'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RefreshTokenResponse'
+        '409':
+          description: Usuário ainda não entrou nesta aula (`NOT_JOINED`) ou sala não provisionada (`STAGE_NOT_PROVISIONED`)
+  /lives/{liveId}/realtime/ticket:
+    post:
+      summary: Reemitir o ticket de conexão do WebSocket (reconexão)
+      description: |
+        Usado na reconexão PREVENTIVA antes do teto de 2h de conexão do API
+        Gateway (jitter entre 1h45–1h55 — docs/fase-1-arquitetura.md, seção
+        10.9). Nunca chama `CreateParticipantToken` — não afeta a sessão do IVS.
+      parameters:
+        - $ref: '#/components/parameters/liveId'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TicketResponse'
+        '409':
+          description: Usuário ainda não entrou nesta aula (`NOT_JOINED`)
+  /recordings/{recordingId}/playback:
+    get:
+      summary: Obter URL de reprodução e cookies assinados de uma gravação
+      description: |
+        Devolve `manifestUrl` (HLS) e os três valores do cookie assinado do
+        CloudFront (`policy`/`signature`/`keyPairId`) — um cliente nativo deve
+        gravá-los no seu próprio cookie store para o domínio de `manifestUrl`
+        (ver docs/ios-integration.md, "Cookies assinados no iOS"). O painel web
+        usa uma rota interna equivalente que já seta `Set-Cookie` diretamente.
+      parameters:
+        - name: recordingId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PlaybackResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Gravação existe, mas não está disponível para reprodução (`RECORDING_NOT_AVAILABLE`)
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  parameters:
+    liveId:
+      name: liveId
+      in: path
+      required: true
+      schema: { type: string }
+  responses:
+    NotFound:
+      description: |
+        Recurso não encontrado — mesmo código/mensagem tanto para "não existe"
+        quanto para "existe em outra instituição" (seção 14 do README, anti-enumeração).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+  schemas:
+    ErrorEnvelope:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code: { type: string, example: 'RESOURCE_NOT_FOUND' }
+            message: { type: string, example: 'Recurso não encontrado.' }
+            details: { type: array, items: {} }
+            requestId: { type: string }
+    JoinLiveResponse:
+      type: object
+      properties:
+        data:
+          type: object
+          properties:
+            live: { type: object }
+            participant: { type: object }
+            ivs:
+              type: object
+              properties:
+                stageArn: { type: string }
+                participantToken: { type: string }
+                expiresAt: { type: string, format: date-time }
+            realtime:
+              type: object
+              properties:
+                connectionToken: { type: string }
+                expiresAt: { type: string, format: date-time }
+        meta: { type: object, properties: { requestId: { type: string } } }
+    RefreshTokenResponse:
+      type: object
+      properties:
+        data:
+          type: object
+          properties:
+            participantToken: { type: string }
+            expiresAt: { type: string, format: date-time }
+        meta: { type: object, properties: { requestId: { type: string } } }
+    TicketResponse:
+      type: object
+      properties:
+        data:
+          type: object
+          properties:
+            connectionToken: { type: string }
+            expiresAt: { type: string, format: date-time }
+        meta: { type: object, properties: { requestId: { type: string } } }
+    PlaybackResponse:
+      type: object
+      properties:
+        data:
+          type: object
+          properties:
+            manifestUrl: { type: string }
+            cookiePath: { type: string }
+            expiresAt: { type: string, format: date-time }
+            cookies:
+              type: object
+              properties:
+                policy: { type: string }
+                signature: { type: string }
+                keyPairId: { type: string }
+        meta: { type: object, properties: { requestId: { type: string } } }

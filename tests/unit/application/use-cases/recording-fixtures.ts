@@ -6,7 +6,8 @@ import type {
 } from '@/application/ports/RecordingRepository';
 import type {
   CloudFrontSigningServicePort,
-  SignPlaybackUrlInput,
+  SignedPlaybackCookies,
+  SignPlaybackCookiesInput,
 } from '@/application/ports/CloudFrontSigningServicePort';
 import type { Recording } from '@/domain/entities/Recording';
 import type { RecordingStatus } from '@/domain/value-objects/RecordingStatus';
@@ -77,10 +78,14 @@ export class FakeRecordingRepository implements RecordingRepository {
 }
 
 export class FakeCloudFrontSigningService implements CloudFrontSigningServicePort {
-  readonly calls: SignPlaybackUrlInput[] = [];
+  readonly calls: SignPlaybackCookiesInput[] = [];
 
-  async signUrl(input: SignPlaybackUrlInput): Promise<string> {
+  async signCookiesForPrefix(input: SignPlaybackCookiesInput): Promise<SignedPlaybackCookies> {
     this.calls.push(input);
-    return `${input.url}?signed=1&expires=${input.expiresAt.getTime()}`;
+    return {
+      policy: `fake-policy-for-${input.resourceUrlPattern}`,
+      signature: 'fake-signature',
+      keyPairId: 'fake-key-pair-id',
+    };
   }
 }

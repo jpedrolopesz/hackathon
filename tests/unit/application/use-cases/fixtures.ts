@@ -49,6 +49,10 @@ export class FakeClassGroupRepository implements ClassGroupRepository {
     return this.store.get(classId) ?? null;
   }
 
+  async findByTeacher(teacherId: string): Promise<readonly ClassGroup[]> {
+    return [...this.store.values()].filter((classGroup) => classGroup.teacherId === teacherId);
+  }
+
   async save(classGroup: ClassGroup): Promise<void> {
     this.store.set(classGroup.classId, classGroup);
   }

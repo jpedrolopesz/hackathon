@@ -42,6 +42,19 @@ export class DynamoDbLiveParticipantRepository implements LiveParticipantReposit
     return item ? toLiveParticipant(item) : null;
   }
 
+  /** Seção 13 do README — "visualizar participantes" no painel. */
+  async listByLive(liveId: string): Promise<readonly LiveParticipant[]> {
+    const result = await this.client.send(
+      new QueryCommand({
+        TableName: this.tableName,
+        KeyConditionExpression: 'PK = :pk AND begins_with(SK, :prefix)',
+        ExpressionAttributeValues: { ':pk': `LIVE#${liveId}`, ':prefix': 'PARTICIPANT#' },
+      }),
+    );
+
+    return (result.Items ?? []).map(toLiveParticipant);
+  }
+
   async save(participant: LiveParticipant): Promise<void> {
     const isPresenter = participant.capabilities.includes('PUBLISH');
 

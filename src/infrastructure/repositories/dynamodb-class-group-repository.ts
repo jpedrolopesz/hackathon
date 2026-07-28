@@ -1,5 +1,5 @@
 import 'server-only';
-import { GetCommand, PutCommand } from '@aws-sdk/lib-dynamodb';
+import { GetCommand, PutCommand, QueryCommand } from '@aws-sdk/lib-dynamodb';
 import type { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
 import type { ClassGroupRepository } from '@/application/ports/ClassGroupRepository';
 import type { ClassGroup } from '@/domain/entities/ClassGroup';
@@ -24,6 +24,20 @@ export class DynamoDbClassGroupRepository implements ClassGroupRepository {
     }
 
     return toClassGroup(result.Item);
+  }
+
+  /** Padrão de acesso #3 do README (turmas de um professor) — GSI1. */
+  async findByTeacher(teacherId: string): Promise<readonly ClassGroup[]> {
+    const result = await this.client.send(
+      new QueryCommand({
+        TableName: this.tableName,
+        IndexName: 'GSI1',
+        KeyConditionExpression: 'GSI1PK = :pk',
+        ExpressionAttributeValues: { ':pk': `TEACHER#${teacherId}` },
+      }),
+    );
+
+    return (result.Items ?? []).map(toClassGroup);
   }
 
   async save(classGroup: ClassGroup): Promise<void> {

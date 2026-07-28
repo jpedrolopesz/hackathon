@@ -16,7 +16,10 @@ import { ValidationError } from '@/domain/errors/ValidationError';
 import { buildEnvelope } from '@/domain/value-objects/RealtimeEnvelope';
 import { ApiGatewayRealtimeBroadcaster } from '@/infrastructure/aws/api-gateway/realtime-broadcaster';
 import { getDocumentClient } from '@/infrastructure/aws/dynamodb/document-client';
-import { DynamoDbChatMessageRepository } from '@/infrastructure/repositories/dynamodb-chat-message-repository';
+import {
+  DEFAULT_SYNC_RESUME_MAX_MESSAGES_PER_SHARD,
+  DynamoDbChatMessageRepository,
+} from '@/infrastructure/repositories/dynamodb-chat-message-repository';
 import { DynamoDbPollRepository } from '@/infrastructure/repositories/dynamodb-poll-repository';
 import { DynamoDbQuestionRepository } from '@/infrastructure/repositories/dynamodb-question-repository';
 import { DynamoDbWebSocketConnectionRepository } from '@/infrastructure/repositories/dynamodb-websocket-connection-repository';
@@ -32,6 +35,12 @@ function requiredEnv(name: string): string {
 
 const tableName = requiredEnv('DYNAMODB_TABLE_NAME');
 const chatShardCount = Number(requiredEnv('CHAT_SHARD_COUNT'));
+// Retenção de mensagens de chat (seção 14 do README) — TTL do DynamoDB, dias por
+// ambiente (infrastructure/lib/config.ts). Default aqui só cobre execução local sem
+// a env var setada; a Lambda real sempre recebe o valor via CDK.
+const chatMessageRetentionDays = Number(
+  process.env['CHAT_MESSAGE_RETENTION_DAYS'] ?? '30',
+);
 const documentClient = getDocumentClient();
 
 const connectionRepository = new DynamoDbWebSocketConnectionRepository(documentClient, tableName);
@@ -39,6 +48,8 @@ const chatMessageRepository = new DynamoDbChatMessageRepository(
   documentClient,
   tableName,
   chatShardCount,
+  DEFAULT_SYNC_RESUME_MAX_MESSAGES_PER_SHARD,
+  chatMessageRetentionDays,
 );
 const questionRepository = new DynamoDbQuestionRepository(documentClient, tableName);
 const pollRepository = new DynamoDbPollRepository(documentClient, tableName);

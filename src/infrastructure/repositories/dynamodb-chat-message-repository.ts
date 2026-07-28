@@ -16,7 +16,13 @@ type CursorMap = Record<string, ShardKey | null>;
 // 10.8). Uma lacuna maior que isso num único shard é preenchida parcialmente e sinalizada
 // via `truncated: true`. Parâmetro do construtor (não uma constante fixa) só para o
 // teste de integração poder provar a truncagem sem precisar de milhares de mensagens.
-const DEFAULT_SYNC_RESUME_MAX_MESSAGES_PER_SHARD = 200;
+export const DEFAULT_SYNC_RESUME_MAX_MESSAGES_PER_SHARD = 200;
+
+// Retenção padrão (seção 14 do README — "política de retenção para mensagens e
+// gravações") se o ambiente não informar um valor — ver
+// `infrastructure/lib/config.ts` (`chatMessageRetentionDays`, por ambiente).
+const DEFAULT_CHAT_MESSAGE_RETENTION_DAYS = 30;
+const SECONDS_PER_DAY = 86_400;
 
 interface ShardQueryResult {
   readonly shard: number;
@@ -37,16 +43,19 @@ export class DynamoDbChatMessageRepository implements ChatMessageRepository {
     private readonly tableName: string,
     private readonly chatShardCount: number,
     private readonly syncResumeMaxMessagesPerShard: number = DEFAULT_SYNC_RESUME_MAX_MESSAGES_PER_SHARD,
+    private readonly chatMessageRetentionDays: number = DEFAULT_CHAT_MESSAGE_RETENTION_DAYS,
   ) {}
 
   async save(message: ChatMessage): Promise<void> {
     const ulid = extractUlid(message.messageId);
+    const ttl = Math.floor(Date.now() / 1000) + this.chatMessageRetentionDays * SECONDS_PER_DAY;
     await this.client.send(
       new PutCommand({
         TableName: this.tableName,
         Item: {
           PK: `LIVE#${message.liveId}#${message.shard}`,
           SK: `CHAT#${ulid}`,
+          ttl,
           ...message,
         },
       }),
