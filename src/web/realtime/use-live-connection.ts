@@ -98,6 +98,10 @@ export function useLiveConnection(options: UseLiveConnectionOptions): LiveConnec
   }, []);
 
   useEffect(() => {
+    if (!initialConnectionToken) {
+      return;
+    }
+
     let reconnectTimeout: ReturnType<typeof setTimeout> | undefined;
     let cancelled = false;
 
@@ -136,6 +140,9 @@ export function useLiveConnection(options: UseLiveConnectionOptions): LiveConnec
       scheduleReconnect();
     }
 
+    // Limite inferior do primeiro `sync.resume`: sem isso, uma reconexão antes de
+    // qualquer evento enviaria `since` ausente e seria rejeitada pelo handler.
+    lastEventTimestampRef.current ??= new Date().toISOString();
     const initialSocket = openSocket(initialConnectionToken, false);
     socketRef.current = initialSocket;
     scheduleReconnect();
@@ -151,8 +158,7 @@ export function useLiveConnection(options: UseLiveConnectionOptions): LiveConnec
       socketRef.current?.close();
       socketRef.current = null;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- initialConnectionToken só é válido na primeira montagem
-  }, [liveId, openSocket]);
+  }, [initialConnectionToken, liveId, openSocket]);
 
   return { status, send };
 }

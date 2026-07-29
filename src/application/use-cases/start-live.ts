@@ -9,6 +9,7 @@ import type { LiveSessionRepository } from '@/application/ports/LiveSessionRepos
 import { ConflictError } from '@/domain/errors/ConflictError';
 import { NotFoundError } from '@/domain/errors/NotFoundError';
 import type { LiveSession } from '@/domain/entities/LiveSession';
+import { emitMetric } from '@/shared/observability/structured-log';
 
 /**
  * Nenhuma chamada à API do IVS aqui: o Stage já existe (`ProvisionLiveStageUseCase`
@@ -45,6 +46,7 @@ export class StartLiveUseCase {
     }
 
     await this.liveSessionRepository.transitionStatus(liveId, 'WAITING', 'LIVE');
+    emitMetric('LivesStarted');
 
     const updated = await this.liveSessionRepository.findById(liveId);
     if (!updated) {

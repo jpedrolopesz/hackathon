@@ -32,6 +32,7 @@ export async function scheduleLiveAction(input: {
   title: string;
   description?: string;
   scheduledStartAt: string;
+  scheduledDurationMinutes?: number;
 }): Promise<ActionResult> {
   const context = await getAuthenticatedContext();
   try {
@@ -45,7 +46,12 @@ export async function scheduleLiveAction(input: {
 
 export async function updateLiveAction(
   liveId: string,
-  input: { title: string; description?: string; scheduledStartAt: string },
+  input: {
+    title: string;
+    description?: string;
+    scheduledStartAt: string;
+    scheduledDurationMinutes?: number;
+  },
 ): Promise<ActionResult> {
   const context = await getAuthenticatedContext();
   try {

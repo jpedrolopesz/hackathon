@@ -11,7 +11,13 @@ import { DynamoDbLiveSessionRepository } from '@/infrastructure/repositories/dyn
 import { DynamoDbRecordingRepository } from '@/infrastructure/repositories/dynamodb-recording-repository';
 import { DynamoDbUpcomingLiveRepository } from '@/infrastructure/repositories/dynamodb-upcoming-live-repository';
 import { DynamoDbUserProfileRepository } from '@/infrastructure/repositories/dynamodb-user-profile-repository';
+import { DynamoDbAttendanceRepository } from '@/infrastructure/repositories/dynamodb-attendance-repository';
+import { DynamoDbQuestionRepository } from '@/infrastructure/repositories/dynamodb-question-repository';
+import { DynamoDbPollRepository } from '@/infrastructure/repositories/dynamodb-poll-repository';
 import { CancelLiveUseCase } from '@/application/use-cases/cancel-live';
+import { CreateCourseUseCase } from '@/application/use-cases/create-course';
+import { CreateClassGroupUseCase } from '@/application/use-cases/create-class-group';
+import { UpdateClassGroupUseCase } from '@/application/use-cases/update-class-group';
 import { FinishLiveUseCase } from '@/application/use-cases/finish-live';
 import { GetRecordingPlaybackUseCase } from '@/application/use-cases/get-recording-playback';
 import { GetUserProfileBySubUseCase } from '@/application/use-cases/get-user-profile-by-sub';
@@ -44,6 +50,9 @@ function buildRepositories() {
     userProfile: new DynamoDbUserProfileRepository(documentClient, tableName),
     connectionTicket: new DynamoDbConnectionTicketRepository(documentClient, tableName),
     upcomingLive: new DynamoDbUpcomingLiveRepository(documentClient, tableName),
+    attendance: new DynamoDbAttendanceRepository(documentClient, tableName),
+    question: new DynamoDbQuestionRepository(documentClient, tableName),
+    poll: new DynamoDbPollRepository(documentClient, tableName),
   };
 }
 
@@ -55,6 +64,9 @@ function buildUseCases(repos: ReturnType<typeof buildRepositories>) {
   );
 
   return {
+    createCourse: new CreateCourseUseCase(repos.course),
+    createClassGroup: new CreateClassGroupUseCase(repos.classGroup, repos.course),
+    updateClassGroup: new UpdateClassGroupUseCase(repos.classGroup),
     getUserProfileBySub: new GetUserProfileBySubUseCase(repos.userProfile),
     listUpcomingLivesForTeacher: new ListUpcomingLivesForTeacherUseCase(
       repos.classGroup,
@@ -72,6 +84,7 @@ function buildUseCases(repos: ReturnType<typeof buildRepositories>) {
       repos.liveParticipant,
       ivsRealTimeService,
       repos.connectionTicket,
+      getEnv().IVS_PARTICIPANT_TOKEN_MAX_DURATION_MINUTES,
     ),
     issueConnectionTicket: new IssueConnectionTicketUseCase(
       repos.liveSession,
@@ -82,11 +95,13 @@ function buildUseCases(repos: ReturnType<typeof buildRepositories>) {
       repos.liveSession,
       repos.liveParticipant,
       ivsRealTimeService,
+      getEnv().IVS_PARTICIPANT_TOKEN_MAX_DURATION_MINUTES,
     ),
     promoteParticipant: new PromoteParticipantUseCase(
       repos.liveSession,
       repos.liveParticipant,
       ivsRealTimeService,
+      getEnv().IVS_PARTICIPANT_TOKEN_MAX_DURATION_MINUTES,
     ),
     demoteParticipant: new DemoteParticipantUseCase(
       repos.liveSession,

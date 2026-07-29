@@ -20,6 +20,7 @@ import type {
   IvsRealTimeServicePort,
   StartCompositionInput,
 } from '@/application/ports/IvsRealTimeServicePort';
+import { emitMetric } from '@/shared/observability/structured-log';
 
 // Cotas de taxa do IVS Real-Time são fixas, não ajustáveis (5 TPS para
 // CreateStage/DeleteStage/DisconnectParticipant/GetStage/StartComposition/
@@ -150,7 +151,9 @@ export class IvsRealTimeService implements IvsRealTimeServicePort {
     try {
       return await operation();
     } catch (error) {
+      emitMetric('IvsOperationFailures', 1, 'Count', { Operation: actionName });
       if (isThrottlingException(error)) {
+        emitMetric('IvsThrottles', 1, 'Count', { Operation: actionName });
         throw new ServiceUnavailableError(
           'O serviço está temporariamente sobrecarregado. Tente novamente em instantes.',
           'SERVICE_UNAVAILABLE',

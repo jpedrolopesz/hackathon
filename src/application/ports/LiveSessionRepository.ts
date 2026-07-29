@@ -25,7 +25,12 @@ export interface LiveSessionRepository {
    * essa regra já foi decidida antes de chegar aqui. */
   updateDetails(
     liveId: string,
-    details: { readonly title: string; readonly description?: string; readonly scheduledStartAt: string },
+    details: {
+      readonly title: string;
+      readonly description?: string;
+      readonly scheduledStartAt: string;
+      readonly scheduledDurationMinutes?: number;
+    },
   ): Promise<void>;
   /**
    * Fase 7 — "reivindica" a gravação ativa da live: só escreve se `activeRecordingId`

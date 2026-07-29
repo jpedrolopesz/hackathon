@@ -6,13 +6,17 @@ import type {
 } from 'aws-lambda';
 import type { AuthenticatedRequestContext } from '@/application/authorization/AuthenticatedRequestContext';
 import { ConnectToLiveUseCase } from '@/application/use-cases/connect-to-live';
+import { broadcastToLive } from '@/application/realtime/broadcast-to-live';
 import { DomainError } from '@/domain/errors/DomainError';
+import { buildEnvelope } from '@/domain/value-objects/RealtimeEnvelope';
+import { ApiGatewayRealtimeBroadcaster } from '@/infrastructure/aws/api-gateway/realtime-broadcaster';
 import { getDocumentClient } from '@/infrastructure/aws/dynamodb/document-client';
 import { DynamoDbAttendanceRepository } from '@/infrastructure/repositories/dynamodb-attendance-repository';
 import { DynamoDbLiveParticipantRepository } from '@/infrastructure/repositories/dynamodb-live-participant-repository';
 import { DynamoDbLiveSessionRepository } from '@/infrastructure/repositories/dynamodb-live-session-repository';
 import { DynamoDbWebSocketConnectionRepository } from '@/infrastructure/repositories/dynamodb-websocket-connection-repository';
 import { httpStatusForError } from '@/shared/http/httpStatusForError';
+import { emitMetric, structuredLog } from '@/shared/observability/structured-log';
 import type { WebSocketAuthorizerContext } from './authorizer';
 
 function requiredEnv(name: string): string {
@@ -26,10 +30,13 @@ function requiredEnv(name: string): string {
 const tableName = requiredEnv('DYNAMODB_TABLE_NAME');
 const documentClient = getDocumentClient();
 
+const liveParticipantRepository = new DynamoDbLiveParticipantRepository(documentClient, tableName);
+const connectionRepository = new DynamoDbWebSocketConnectionRepository(documentClient, tableName);
+const broadcaster = new ApiGatewayRealtimeBroadcaster(requiredEnv('WEBSOCKET_API_ENDPOINT'));
 const connectToLive = new ConnectToLiveUseCase(
   new DynamoDbLiveSessionRepository(documentClient, tableName),
-  new DynamoDbLiveParticipantRepository(documentClient, tableName),
-  new DynamoDbWebSocketConnectionRepository(documentClient, tableName),
+  liveParticipantRepository,
+  connectionRepository,
   new DynamoDbAttendanceRepository(documentClient, tableName),
 );
 
@@ -56,9 +63,28 @@ export async function handler(event: ConnectEvent): Promise<APIGatewayProxyResul
   };
 
   try {
-    await connectToLive.execute(context, {
+    const connection = await connectToLive.execute(context, {
       liveId: event.requestContext.authorizer.liveId,
       connectionId: event.requestContext.connectionId,
+    });
+    const participant = await liveParticipantRepository.findByUser(
+      connection.liveId,
+      connection.userId,
+    );
+    if (participant) {
+      await broadcastToLive(
+        connectionRepository,
+        broadcaster,
+        connection.liveId,
+        buildEnvelope('participant.connected', connection.liveId, participant),
+      );
+    }
+    emitMetric('WebSocketConnectionsOpened');
+    structuredLog('info', {
+      event: 'websocket.connected',
+      correlationId: event.requestContext.requestId,
+      requestId: event.requestContext.requestId,
+      liveId: connection.liveId,
     });
     return { statusCode: 200 };
   } catch (error) {

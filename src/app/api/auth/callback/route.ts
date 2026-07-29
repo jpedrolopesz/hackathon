@@ -5,6 +5,7 @@ import { getPanelClientSecret } from '@/infrastructure/aws/cognito/get-panel-cli
 import { setSessionCookie } from '@/web/auth/session';
 import { getEnv } from '@/shared/config/env';
 import { STATE_COOKIE_NAME } from '@/web/auth/oauth-state';
+import { publicRequestUrl } from '@/web/auth/public-origin';
 
 interface TokenResponse {
   readonly access_token: string;
@@ -38,6 +39,7 @@ function decodeIdTokenSub(idToken: string): string {
  * `infrastructure/stacks/cognito-stack.ts`).
  */
 export async function GET(request: Request): Promise<NextResponse> {
+  const env = getEnv();
   const url = new URL(request.url);
   const code = url.searchParams.get('code');
   const state = url.searchParams.get('state');
@@ -48,15 +50,26 @@ export async function GET(request: Request): Promise<NextResponse> {
   cookieStore.delete(STATE_COOKIE_NAME);
 
   if (error) {
-    return NextResponse.redirect(new URL(`/login?error=${encodeURIComponent(error)}`, request.url));
+    return NextResponse.redirect(
+      publicRequestUrl(
+        `/login?error=${encodeURIComponent(error)}`,
+        request,
+        env.APP_PUBLIC_ORIGIN,
+      ),
+    );
   }
   if (!code || !state || !expectedState || state !== expectedState) {
-    return NextResponse.redirect(new URL('/login?error=INVALID_OAUTH_STATE', request.url));
+    return NextResponse.redirect(
+      publicRequestUrl('/login?error=INVALID_OAUTH_STATE', request, env.APP_PUBLIC_ORIGIN),
+    );
   }
 
-  const env = getEnv();
   const clientSecret = await getPanelClientSecret(env.COGNITO_USER_POOL_ID, env.COGNITO_CLIENT_ID);
-  const redirectUri = new URL('/api/auth/callback', request.url).toString();
+  const redirectUri = publicRequestUrl(
+    '/api/auth/callback',
+    request,
+    env.APP_PUBLIC_ORIGIN,
+  ).toString();
   const basicAuth = Buffer.from(`${env.COGNITO_CLIENT_ID}:${clientSecret}`).toString('base64');
 
   const tokenResponse = await fetch(`${env.COGNITO_HOSTED_UI_DOMAIN}/oauth2/token`, {
@@ -74,7 +87,9 @@ export async function GET(request: Request): Promise<NextResponse> {
   });
 
   if (!tokenResponse.ok) {
-    return NextResponse.redirect(new URL('/login?error=TOKEN_EXCHANGE_FAILED', request.url));
+    return NextResponse.redirect(
+      publicRequestUrl('/login?error=TOKEN_EXCHANGE_FAILED', request, env.APP_PUBLIC_ORIGIN),
+    );
   }
 
   const tokens = (await tokenResponse.json()) as TokenResponse;
@@ -87,5 +102,5 @@ export async function GET(request: Request): Promise<NextResponse> {
     accessTokenExpiresAt: Math.floor(Date.now() / 1000) + tokens.expires_in,
   });
 
-  return NextResponse.redirect(new URL('/lives', request.url));
+  return NextResponse.redirect(publicRequestUrl('/lives', request, env.APP_PUBLIC_ORIGIN));
 }

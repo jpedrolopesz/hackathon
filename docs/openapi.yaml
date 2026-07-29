@@ -1,4 +1,4 @@
-openapi: 3.0.3
+openapi: 3.1.0
 info:
   title: Plataforma de Aulas ao Vivo — API v1
   description: |
@@ -28,6 +28,165 @@ servers:
 security:
   - bearerAuth: []
 paths:
+  /me:
+    get:
+      summary: Obter o perfil autenticado
+      responses: { '200': { $ref: '#/components/responses/Success' } }
+    patch:
+      summary: Atualizar nome/e-mail do perfil autenticado
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      responses: { '200': { $ref: '#/components/responses/Success' } }
+  /courses:
+    get:
+      summary: Listar cursos acessíveis
+      parameters: [{ $ref: '#/components/parameters/Cursor' }, { $ref: '#/components/parameters/Limit' }]
+      responses: { '200': { $ref: '#/components/responses/Paginated' } }
+    post:
+      summary: Criar curso
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      responses: { '200': { $ref: '#/components/responses/Success' } }
+  /courses/{courseId}:
+    parameters: [{ $ref: '#/components/parameters/CourseId' }]
+    get:
+      summary: Obter curso
+      responses: { '200': { $ref: '#/components/responses/Success' } }
+    patch:
+      summary: Atualizar curso
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      responses: { '200': { $ref: '#/components/responses/Success' } }
+  /classes:
+    get:
+      summary: Listar turmas acessíveis
+      parameters: [{ $ref: '#/components/parameters/Cursor' }, { $ref: '#/components/parameters/Limit' }]
+      responses: { '200': { $ref: '#/components/responses/Paginated' } }
+    post:
+      summary: Criar turma
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      responses: { '200': { $ref: '#/components/responses/Success' } }
+  /classes/{classId}:
+    parameters: [{ $ref: '#/components/parameters/ClassId' }]
+    get:
+      summary: Obter turma
+      responses: { '200': { $ref: '#/components/responses/Success' } }
+    patch:
+      summary: Atualizar turma
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      responses: { '200': { $ref: '#/components/responses/Success' } }
+  /classes/{classId}/lives:
+    parameters: [{ $ref: '#/components/parameters/ClassId' }]
+    get:
+      summary: Listar aulas da turma
+      parameters: [{ $ref: '#/components/parameters/Cursor' }, { $ref: '#/components/parameters/Limit' }]
+      responses: { '200': { $ref: '#/components/responses/Paginated' } }
+    post:
+      summary: Agendar aula
+      description: Aceita `scheduledDurationMinutes`; default 120 minutos.
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      responses: { '200': { $ref: '#/components/responses/Success' } }
+  /lives:
+    get:
+      summary: Listar aulas acessíveis
+      parameters: [{ $ref: '#/components/parameters/Cursor' }, { $ref: '#/components/parameters/Limit' }]
+      responses: { '200': { $ref: '#/components/responses/Paginated' } }
+  /lives/{liveId}:
+    parameters: [{ $ref: '#/components/parameters/liveId' }]
+    get:
+      summary: Obter aula
+      responses: { '200': { $ref: '#/components/responses/Success' } }
+    patch:
+      summary: Atualizar aula
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      responses: { '200': { $ref: '#/components/responses/Success' } }
+  /lives/{liveId}/start:
+    post:
+      summary: Iniciar aula
+      parameters: [{ $ref: '#/components/parameters/liveId' }, { $ref: '#/components/parameters/IdempotencyKey' }]
+      responses: { '200': { $ref: '#/components/responses/Success' } }
+  /lives/{liveId}/finish:
+    post:
+      summary: Encerrar aula
+      parameters: [{ $ref: '#/components/parameters/liveId' }, { $ref: '#/components/parameters/IdempotencyKey' }]
+      responses: { '200': { $ref: '#/components/responses/Success' } }
+  /lives/{liveId}/cancel:
+    post:
+      summary: Cancelar aula
+      parameters: [{ $ref: '#/components/parameters/liveId' }, { $ref: '#/components/parameters/IdempotencyKey' }]
+      responses: { '200': { $ref: '#/components/responses/Success' } }
+  /lives/{liveId}/leave:
+    post:
+      summary: Sair da aula
+      parameters: [{ $ref: '#/components/parameters/liveId' }, { $ref: '#/components/parameters/IdempotencyKey' }]
+      responses: { '200': { $ref: '#/components/responses/Success' } }
+  /lives/{liveId}/participants:
+    get:
+      summary: Listar participantes
+      parameters: [{ $ref: '#/components/parameters/liveId' }, { $ref: '#/components/parameters/Cursor' }, { $ref: '#/components/parameters/Limit' }]
+      responses: { '200': { $ref: '#/components/responses/Paginated' } }
+  /lives/{liveId}/presenters/{userId}/promote:
+    post:
+      summary: Promover participante
+      parameters: [{ $ref: '#/components/parameters/liveId' }, { $ref: '#/components/parameters/UserId' }, { $ref: '#/components/parameters/IdempotencyKey' }]
+      responses: { '200': { $ref: '#/components/responses/Success' } }
+  /lives/{liveId}/presenters/{userId}/demote:
+    post:
+      summary: Rebaixar apresentador
+      parameters: [{ $ref: '#/components/parameters/liveId' }, { $ref: '#/components/parameters/UserId' }, { $ref: '#/components/parameters/IdempotencyKey' }]
+      responses: { '200': { $ref: '#/components/responses/Success' } }
+  /lives/{liveId}/participants/{userId}:
+    delete:
+      summary: Remover participante
+      parameters: [{ $ref: '#/components/parameters/liveId' }, { $ref: '#/components/parameters/UserId' }, { $ref: '#/components/parameters/IdempotencyKey' }]
+      responses: { '200': { $ref: '#/components/responses/Success' } }
+  /lives/{liveId}/recordings/start:
+    post:
+      summary: Solicitar gravação
+      description: A composição inicia quando houver publisher; pode retornar `PENDING_PUBLISHER`.
+      parameters: [{ $ref: '#/components/parameters/liveId' }, { $ref: '#/components/parameters/IdempotencyKey' }]
+      responses: { '200': { $ref: '#/components/responses/Success' } }
+  /lives/{liveId}/recordings/stop:
+    post:
+      summary: Interromper composição ativa
+      parameters: [{ $ref: '#/components/parameters/liveId' }, { $ref: '#/components/parameters/IdempotencyKey' }]
+      responses: { '200': { $ref: '#/components/responses/Success' } }
+  /lives/{liveId}/recordings:
+    get:
+      summary: Listar gravações da aula
+      parameters: [{ $ref: '#/components/parameters/liveId' }, { $ref: '#/components/parameters/Cursor' }, { $ref: '#/components/parameters/Limit' }]
+      responses: { '200': { $ref: '#/components/responses/Paginated' } }
+  /recordings/{recordingId}:
+    parameters: [{ $ref: '#/components/parameters/RecordingId' }]
+    get:
+      summary: Obter gravação
+      responses: { '200': { $ref: '#/components/responses/Success' } }
+    patch:
+      summary: Alterar visibilidade (`PUBLISHED` ou `HIDDEN`)
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      responses: { '200': { $ref: '#/components/responses/Success' } }
+  /recordings/{recordingId}/publish:
+    post:
+      summary: Publicar replay
+      parameters: [{ $ref: '#/components/parameters/RecordingId' }, { $ref: '#/components/parameters/IdempotencyKey' }]
+      responses: { '200': { $ref: '#/components/responses/Success' } }
+  /recordings/{recordingId}/hide:
+    post:
+      summary: Ocultar replay
+      parameters: [{ $ref: '#/components/parameters/RecordingId' }, { $ref: '#/components/parameters/IdempotencyKey' }]
+      responses: { '200': { $ref: '#/components/responses/Success' } }
+  /lives/{liveId}/attendance:
+    get:
+      summary: Listar presença
+      parameters: [{ $ref: '#/components/parameters/liveId' }, { $ref: '#/components/parameters/Cursor' }, { $ref: '#/components/parameters/Limit' }]
+      responses: { '200': { $ref: '#/components/responses/Paginated' } }
+  /lives/{liveId}/questions:
+    get:
+      summary: Listar perguntas
+      parameters: [{ $ref: '#/components/parameters/liveId' }, { $ref: '#/components/parameters/Cursor' }, { $ref: '#/components/parameters/Limit' }]
+      responses: { '200': { $ref: '#/components/responses/Paginated' } }
+  /lives/{liveId}/polls:
+    get:
+      summary: Listar enquetes
+      parameters: [{ $ref: '#/components/parameters/liveId' }, { $ref: '#/components/parameters/Cursor' }, { $ref: '#/components/parameters/Limit' }]
+      responses: { '200': { $ref: '#/components/responses/Paginated' } }
   /lives/{liveId}/join:
     post:
       summary: Entrar em uma aula (estúdio ou audiência)
@@ -47,17 +206,18 @@ paths:
                 $ref: '#/components/schemas/JoinLiveResponse'
               example:
                 data:
-                  live: { liveId: 'live-123', status: 'LIVE', title: 'Aula 1' }
+                  live: { id: 'live-123', status: 'LIVE', title: 'Aula 1' }
                   participant:
-                    liveParticipantId: '9c3b...'
+                    id: '9c3b...'
+                    role: 'ALUNO'
                     capabilities: ['SUBSCRIBE']
                   ivs:
                     stageArn: 'arn:aws:ivs:us-east-1:123456789012:stage/abc'
                     participantToken: 'eyJhbGciOi...'
                     expiresAt: '2026-07-28T15:00:00.000Z'
                   realtime:
+                    webSocketUrl: 'wss://example.execute-api.us-east-1.amazonaws.com/production'
                     connectionToken: '6c9e...'
-                    expiresAt: '2026-07-28T12:05:00.000Z'
                 meta: { requestId: 'a1b2c3' }
         '404':
           $ref: '#/components/responses/NotFound'
@@ -65,14 +225,15 @@ paths:
           description: Live indisponível ou sala ainda sendo preparada (`LIVE_NOT_AVAILABLE`/`STAGE_NOT_PROVISIONED`)
   /lives/{liveId}/token/refresh:
     post:
-      summary: Renovar o participant token do IVS sem cair a publicação
+      summary: Reemitir o participant token do IVS
       description: |
         Chame isto ANTES do `expiresAt` retornado por `/join` (ou pela renovação
-        anterior) — o participant token tem validade de 180min. No lado do
-        cliente, aplique o novo token com o mecanismo de troca do SDK (Web
-        Broadcast SDK: `Stage.exchangeToken(newToken)`; IVS iOS Broadcast SDK:
-        `IVSStage.refreshStrategy`/reconexão equivalente — ver
-        docs/ios-integration.md) para não derrubar a sessão ativa.
+        anterior). A validade é a duração agendada da aula + 30min, limitada pelo
+        teto do ambiente. No lado do
+        cliente, saia do stage atual, crie uma nova instância com o token reemitido
+        e entre novamente. Isso interrompe brevemente a publicação. Não use
+        `Stage.exchangeToken`: a AWS limita a troca a tokens autoassinados por key
+        pair, e estes tokens são criados pela API `CreateParticipantToken`.
       parameters:
         - $ref: '#/components/parameters/liveId'
       responses:
@@ -139,7 +300,50 @@ components:
       in: path
       required: true
       schema: { type: string }
+    CourseId:
+      name: courseId
+      in: path
+      required: true
+      schema: { type: string }
+    ClassId:
+      name: classId
+      in: path
+      required: true
+      schema: { type: string }
+    RecordingId:
+      name: recordingId
+      in: path
+      required: true
+      schema: { type: string }
+    UserId:
+      name: userId
+      in: path
+      required: true
+      schema: { type: string }
+    Cursor:
+      name: cursor
+      in: query
+      schema: { type: string }
+    Limit:
+      name: limit
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema: { type: string, maxLength: 200 }
   responses:
+    Success:
+      description: Envelope de sucesso da seção 12.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/SuccessEnvelope' }
+    Paginated:
+      description: Coleção paginada por cursor.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/PaginatedEnvelope' }
     NotFound:
       description: |
         Recurso não encontrado — mesmo código/mensagem tanto para "não existe"
@@ -149,6 +353,23 @@ components:
           schema:
             $ref: '#/components/schemas/ErrorEnvelope'
   schemas:
+    SuccessEnvelope:
+      type: object
+      required: [data, meta]
+      properties:
+        data: {}
+        meta: { type: object, required: [requestId], properties: { requestId: { type: string } } }
+    PaginatedEnvelope:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          type: object
+          required: [items]
+          properties:
+            items: { type: array, items: {} }
+            nextCursor: { type: string }
+        meta: { type: object, required: [requestId], properties: { requestId: { type: string } } }
     ErrorEnvelope:
       type: object
       properties:
@@ -166,7 +387,13 @@ components:
           type: object
           properties:
             live: { type: object }
-            participant: { type: object }
+            participant:
+              type: object
+              required: [id, role, capabilities]
+              properties:
+                id: { type: string }
+                role: { type: string, enum: [ADMIN, PROFESSOR, ALUNO] }
+                capabilities: { type: array, items: { type: string, enum: [PUBLISH, SUBSCRIBE] } }
             ivs:
               type: object
               properties:
@@ -176,8 +403,8 @@ components:
             realtime:
               type: object
               properties:
+                webSocketUrl: { type: string }
                 connectionToken: { type: string }
-                expiresAt: { type: string, format: date-time }
         meta: { type: object, properties: { requestId: { type: string } } }
     RefreshTokenResponse:
       type: object

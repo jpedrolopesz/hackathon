@@ -198,6 +198,8 @@ describe('JoinLiveUseCase — as seis verificações da seção 6', () => {
 
     expect(second.participant.liveParticipantId).toBe(first.participant.liveParticipantId);
     expect(second.participant.joinedAt).toBe(first.participant.joinedAt);
+    expect(second.participant.ivsParticipantId).not.toBe(first.participant.ivsParticipantId);
+    expect(second.ivs.participantToken).not.toBe(first.ivs.participantToken);
   });
 
   it('rejoining never creates a second LiveParticipant record (no duplicate, no double attendance count)', async () => {

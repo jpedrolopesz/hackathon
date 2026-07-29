@@ -802,7 +802,7 @@ adotado em `DemoteParticipantUseCase`
   `join` de novo (a Fase 6 entrega isso via WebSocket `participant.demoted`), que
   resolve o `LiveParticipant` existente e emite um token `SUBSCRIBE`-only. Mitigação
   adicional para o gap de documentação: os tokens de join/promoção usam `duration`
-  curto (180 min, não os 720 min de default da API) — reduz a janela de exposição de
+  limitado à duração agendada + 30min e ao teto do ambiente — reduz a janela de exposição de
   um token `PUBLISH` que, na pior hipótese não documentada, pudesse ser reutilizado.
 
 ### 9.3 Ordem de operações no provisionamento — Stage órfão
@@ -1802,7 +1802,7 @@ use-cases, autenticado por sessão de cookie (`getAuthenticatedContextForFetch`,
 nunca `redirect()`: uma chamada `fetch` não navega, só receberia uma resposta de
 redirect opaca), fora de `/api/v1/*` (sem JWT authorizer do API Gateway).
 
-### 14.6 Estúdio — Web Broadcast SDK, `exchangeToken`, e o mito do "token de 20min"
+### 14.6 Estúdio — Web Broadcast SDK, reemissão com reconexão, e o mito do "token de 20min"
 
 `src/web/studio/StudioClient.tsx`: teste de câmera/microfone via
 `getUserMedia` (preview antes de publicar), `Stage`/`LocalStageStream`/
@@ -1815,18 +1815,19 @@ doc oficial (`API_CreateParticipantToken.html`, buscada ao vivo: "Default: 720 (
 hours)") e um comentário JÁ EXISTENTE neste código desde a Fase 5/6
 (`participant-token-attributes.ts`: "confirmado em CreateParticipantToken... default
 720 (12h)") — e as duas concordam: o default é 720min (12h), não 20min. Isso não
-muda a necessidade do refresh (a duração usada aqui é 180min, deliberadamente menor
-que o default — ver `JoinLiveUseCase`/`RefreshParticipantTokenUseCase` — e uma aula
-pode superar 180min de qualquer forma), só corrige a premissa numérica.
+O valor emitido agora é a duração agendada da aula + 30min, limitado por
+`IVS_PARTICIPANT_TOKEN_MAX_DURATION_MINUTES` e pelo máximo absoluto do IVS. Assim,
+refresh é fallback para aula que estourou o horário, não interrupção programada.
 
 `RefreshParticipantTokenUseCase` (`POST /api/v1/lives/{liveId}/token/refresh` e o
 espelho `/api/panel/...`) reemite o token nas MESMAS capabilities (nunca eleva a
-PUBLISH — isso é só `PromoteParticipantUseCase`) e nunca desconecta ninguém (isso é
-só `DemoteParticipantUseCase`). No cliente, `Stage.exchangeToken(newToken)` (método
-real do SDK, confirmado no `.d.ts`: "Exchanges the current stage token for a new
-one... without disconnecting from the stage") aplica o token novo sem derrubar a
-publicação — exatamente o requisito pedido. `StudioClient` agenda a renovação
-10min antes de `expiresAt` (margem generosa frente aos 180min de validade).
+PUBLISH — isso é só `PromoteParticipantUseCase`). A documentação de token exchange
+é explícita: _"Token exchange only works with tokens created on your server using a
+key pair. It does not work with tokens created via the CreateParticipantToken API."_
+Logo, o cliente NÃO chama `Stage.exchangeToken(newToken)`: sai do stage, cria uma
+nova instância e entra novamente. Isso interrompe brevemente a publicação; o
+`StudioClient` mostra o estado ao professor e restaura o stage anterior se a nova
+entrada falhar. A renovação é agendada 10min antes de `expiresAt`.
 
 ### 14.7 Cliente WebSocket — jitter de reconexão, contrato da seção 10.9, agora implementado
 
@@ -1864,19 +1865,16 @@ pequeno; um índice achatado só se pagaria com uma escala bem maior.
 12.2) fragmenta uma aula em várias gravações, elas aparecem como "Parte 1, Parte
 2..." sob o mesmo cabeçalho, não como aulas desconexas.
 
-### 14.10 O que ficou fora desta fase, registrado, não esquecido
+### 14.10 Fechamento da UI do estúdio
 
-- **UI de perguntas/enquetes/reações no estúdio**: o `StudioClient` expõe um chat
-  simples e um log genérico de eventos WebSocket (`poll.created`,
-  `question.highlighted` etc. aparecem no log, mas sem widgets dedicados de
-  criar/votar enquete ou destacar pergunta na UI). O USE-CASE e a rota WebSocket já
-  existem desde a Fase 6/7 (`create-poll`, `close-poll`, `highlight-question`
-  etc.) — falta só a camada de apresentação dedicada. Registrado por causa do
-  tamanho desta fase, não por dificuldade técnica.
-- **Lista de participantes em tempo real via WebSocket**: `ParticipantsList` (painel)
-  lê `LiveParticipantRepository.listByLive` no carregamento da página (Server
-  Component), não atualiza sozinha quando alguém entra/sai — precisaria assinar o
-  WebSocket também para refletir presença ao vivo sem recarregar a página.
+O `StudioClient` agora tem widgets dedicados para moderar chat, destacar perguntas,
+criar e encerrar enquetes e ver a apuração. A lista inicial de participantes vem de
+`LiveParticipantRepository.listByLive`; `$connect` e `$disconnect` publicam
+`participant.connected`/`participant.disconnected`, mantendo-a atualizada sem
+recarregar a página.
+
+Ficou fora somente:
+
 - **Papel ADMIN no painel**: as páginas de criação de turma/curso/matrícula (fora
   do escopo de "painel do PROFESSOR" da seção 13) não foram construídas — os
   use-cases (`CreateClassGroupUseCase`, `EnrollStudentUseCase` etc.) já existiam

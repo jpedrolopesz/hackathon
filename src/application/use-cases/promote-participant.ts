@@ -18,8 +18,8 @@ import {
   buildParticipantTokenUserId,
   IVS_TOKEN_CAPABILITIES_BY_ROLE,
 } from '@/infrastructure/aws/ivs/participant-token-attributes';
-
-const JOIN_TOKEN_DURATION_MINUTES = 180;
+import { participantTokenDurationMinutes } from '@/application/live/participant-token-duration';
+import { emitMetric } from '@/shared/observability/structured-log';
 
 export interface PromoteParticipantInput {
   readonly liveId: string;
@@ -45,6 +45,7 @@ export class PromoteParticipantUseCase {
     private readonly liveSessionRepository: LiveSessionRepository,
     private readonly liveParticipantRepository: LiveParticipantRepository,
     private readonly ivsRealTimeService: IvsRealTimeServicePort,
+    private readonly participantTokenMaximumMinutes = 720,
   ) {}
 
   async execute(
@@ -89,6 +90,10 @@ export class PromoteParticipantUseCase {
 
     const capabilities = IVS_TOKEN_CAPABILITIES_BY_ROLE.PRESENTER;
     assertValidCapabilities(capabilities);
+    const tokenDurationMinutes = participantTokenDurationMinutes(
+      live,
+      this.participantTokenMaximumMinutes,
+    );
 
     const tokenIdentity = {
       liveParticipantId: participant.liveParticipantId,
@@ -103,7 +108,7 @@ export class PromoteParticipantUseCase {
       userId: tokenUserId,
       attributes: tokenAttributes,
       capabilities,
-      durationMinutes: JOIN_TOKEN_DURATION_MINUTES,
+      durationMinutes: tokenDurationMinutes,
     });
 
     const promoted: LiveParticipant = {
@@ -113,6 +118,7 @@ export class PromoteParticipantUseCase {
       promotedAt: new Date().toISOString(),
     };
     await this.liveParticipantRepository.save(promoted);
+    emitMetric('PresentersPromoted');
 
     return {
       participant: promoted,

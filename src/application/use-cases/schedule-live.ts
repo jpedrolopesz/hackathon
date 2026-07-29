@@ -8,6 +8,7 @@ import type { AuthenticatedRequestContext } from '@/application/authorization/Au
 import type { ClassGroupRepository } from '@/application/ports/ClassGroupRepository';
 import type { LiveSessionRepository } from '@/application/ports/LiveSessionRepository';
 import { NotFoundError } from '@/domain/errors/NotFoundError';
+import { ValidationError } from '@/domain/errors/ValidationError';
 import type { LiveSession } from '@/domain/entities/LiveSession';
 
 export interface ScheduleLiveInput {
@@ -16,6 +17,7 @@ export interface ScheduleLiveInput {
   readonly title: string;
   readonly description?: string;
   readonly scheduledStartAt: string;
+  readonly scheduledDurationMinutes?: number;
 }
 
 /**
@@ -33,6 +35,17 @@ export class ScheduleLiveUseCase {
     context: AuthenticatedRequestContext,
     input: ScheduleLiveInput,
   ): Promise<LiveSession> {
+    if (
+      input.scheduledDurationMinutes !== undefined &&
+      (!Number.isInteger(input.scheduledDurationMinutes) ||
+        input.scheduledDurationMinutes < 15 ||
+        input.scheduledDurationMinutes > 20_130)
+    ) {
+      throw new ValidationError(
+        'A duração agendada deve ficar entre 15 e 20130 minutos.',
+        'LIVE_DURATION_INVALID',
+      );
+    }
     const classGroup = await this.classGroupRepository.findById(input.classId);
     if (!classGroup) {
       throw new NotFoundError(
@@ -54,6 +67,9 @@ export class ScheduleLiveUseCase {
       title: input.title,
       ...(input.description !== undefined ? { description: input.description } : {}),
       scheduledStartAt: input.scheduledStartAt,
+      ...(input.scheduledDurationMinutes !== undefined
+        ? { scheduledDurationMinutes: input.scheduledDurationMinutes }
+        : {}),
       status: 'SCHEDULED',
       createdAt: now,
       updatedAt: now,

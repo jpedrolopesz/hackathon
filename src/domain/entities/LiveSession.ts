@@ -16,6 +16,8 @@ export interface LiveSession {
   readonly title: string;
   readonly description?: string;
   readonly scheduledStartAt: string;
+  /** Duração planejada da aula; usada para limitar a validade do participant token. */
+  readonly scheduledDurationMinutes?: number;
   readonly status: LiveStatus;
   readonly stageArn?: string;
   readonly activeRecordingId?: string;

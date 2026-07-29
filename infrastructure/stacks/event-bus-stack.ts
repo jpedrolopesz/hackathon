@@ -2,6 +2,7 @@ import * as path from 'node:path';
 import { Duration, Stack } from 'aws-cdk-lib';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as events from 'aws-cdk-lib/aws-events';
+import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
 import * as targets from 'aws-cdk-lib/aws-events-targets';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
@@ -41,6 +42,12 @@ export class EventBusStack extends Stack {
     const deadLetterQueue = new sqs.Queue(this, 'IvsEventConsumerDlq', {
       retentionPeriod: Duration.days(14),
     });
+    new cloudwatch.Alarm(this, 'IvsEventConsumerDlqAlarm', {
+      metric: deadLetterQueue.metricApproximateNumberOfMessagesVisible(),
+      threshold: 1,
+      evaluationPeriods: 1,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    });
 
     this.ivsEventConsumer = new lambdaNodejs.NodejsFunction(this, 'IvsEventConsumerFunction', {
       entry: path.join(
@@ -51,6 +58,7 @@ export class EventBusStack extends Stack {
       runtime: lambda.Runtime.NODEJS_24_X,
       logRetention: props.config.logRetention,
       timeout: Duration.seconds(30),
+      tracing: lambda.Tracing.ACTIVE,
       environment: {
         DYNAMODB_TABLE_NAME: props.table.tableName,
         IVS_ENCODER_CONFIGURATION_ARN: props.encoderConfigurationArn,
@@ -60,6 +68,12 @@ export class EventBusStack extends Stack {
         // abaixo).
         APP_ENV: props.config.envName,
       },
+    });
+    new cloudwatch.Alarm(this, 'IvsEventConsumerErrorsAlarm', {
+      metric: this.ivsEventConsumer.metricErrors(),
+      threshold: 1,
+      evaluationPeriods: 1,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
     });
 
     // Confirmado na Service Authorization Reference: StartComposition exige DOIS

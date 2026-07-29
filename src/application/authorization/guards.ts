@@ -64,9 +64,11 @@ export function assertRole(context: HasRole, allowed: readonly Role[]): void {
 }
 
 /**
- * Seção 17 do README lista "professor tentando editar turma de outra turma" como caso
- * crítico. ADMIN sempre pode; PROFESSOR só se for o dono (`teacherId`); qualquer outro
- * papel (inclusive ALUNO) cai no branch de erro.
+ * Seção 17 do README lista "professor tentando editar live de outra turma" como caso
+ * crítico. Este guard protege recursos operacionais da turma (como LiveSession):
+ * ADMIN sempre pode; PROFESSOR só se for o dono (`teacherId`); qualquer outro papel
+ * (inclusive ALUNO) cai no branch de erro. A entidade administrativa ClassGroup usa
+ * `assertRole(ADMIN)` diretamente.
  */
 export function assertClassOwner(
   context: AuthenticatedRequestContext,

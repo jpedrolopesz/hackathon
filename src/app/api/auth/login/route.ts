@@ -3,6 +3,7 @@ import { randomBytes } from 'node:crypto';
 import { NextResponse } from 'next/server';
 import { getEnv } from '@/shared/config/env';
 import { STATE_COOKIE_NAME } from '@/web/auth/oauth-state';
+import { publicRequestUrl } from '@/web/auth/public-origin';
 
 /**
  * Início do fluxo OAuth Authorization Code (Hosted UI do Cognito) — seção 13 do
@@ -16,7 +17,11 @@ import { STATE_COOKIE_NAME } from '@/web/auth/oauth-state';
 export function GET(request: Request): NextResponse {
   const env = getEnv();
   const state = randomBytes(32).toString('base64url');
-  const redirectUri = new URL('/api/auth/callback', request.url).toString();
+  const redirectUri = publicRequestUrl(
+    '/api/auth/callback',
+    request,
+    env.APP_PUBLIC_ORIGIN,
+  ).toString();
 
   const authorizeUrl = new URL(`${env.COGNITO_HOSTED_UI_DOMAIN}/oauth2/authorize`);
   authorizeUrl.searchParams.set('client_id', env.COGNITO_CLIENT_ID);

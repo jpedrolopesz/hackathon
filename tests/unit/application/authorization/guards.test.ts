@@ -64,7 +64,7 @@ describe('assertClassOwner', () => {
     expect(() => assertClassOwner(context, classGroup)).not.toThrow();
   });
 
-  it('rejects a PROFESSOR editing another turma (seção 17 do README)', () => {
+  it('rejects a PROFESSOR managing a live from another turma (seção 17 do README)', () => {
     const context = buildContext({ role: 'PROFESSOR', userId: 'teacher-2' });
     expect(codeOf(() => assertClassOwner(context, classGroup))).toBe('CLASS_NOT_OWNED');
   });

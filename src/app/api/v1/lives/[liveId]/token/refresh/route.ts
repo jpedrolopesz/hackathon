@@ -5,9 +5,8 @@ import { handleApiV1Request } from '@/web/http/handle-api-v1-request';
 
 /**
  * `POST /api/v1/lives/{liveId}/token/refresh` — ponto de revisão explícito da Fase
- * 8: o participant token do IVS expira (180min, ver
- * `RefreshParticipantTokenUseCase`); o cliente do estúdio chama isto ANTES de
- * expirar para não cair a publicação no meio de uma aula longa.
+ * 8: fallback para uma aula que ultrapassou a duração agendada + margem. O cliente
+ * chama isto antes de expirar e reconecta brevemente o Stage.
  */
 export async function POST(
   request: Request,

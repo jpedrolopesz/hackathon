@@ -127,10 +127,18 @@ export class DynamoDbLiveSessionRepository implements LiveSessionRepository {
 
   async updateDetails(
     liveId: string,
-    details: { readonly title: string; readonly description?: string; readonly scheduledStartAt: string },
+    details: {
+      readonly title: string;
+      readonly description?: string;
+      readonly scheduledStartAt: string;
+      readonly scheduledDurationMinutes?: number;
+    },
   ): Promise<void> {
     const setClause =
-      'SET title = :title, scheduledStartAt = :scheduledStartAt, updatedAt = :now, GSI1SK = :gsi1sk';
+      'SET title = :title, scheduledStartAt = :scheduledStartAt, updatedAt = :now, GSI1SK = :gsi1sk' +
+      (details.scheduledDurationMinutes !== undefined
+        ? ', scheduledDurationMinutes = :scheduledDurationMinutes'
+        : '');
     const updateExpression =
       details.description !== undefined
         ? `${setClause}, description = :description`
@@ -148,6 +156,9 @@ export class DynamoDbLiveSessionRepository implements LiveSessionRepository {
           ':gsi1sk': `${details.scheduledStartAt}#${liveId}`,
           ':now': new Date().toISOString(),
           ...(details.description !== undefined ? { ':description': details.description } : {}),
+          ...(details.scheduledDurationMinutes !== undefined
+            ? { ':scheduledDurationMinutes': details.scheduledDurationMinutes }
+            : {}),
         },
       }),
     );
@@ -238,11 +249,13 @@ function toLiveSession(item: Record<string, unknown>): LiveSession {
   const stageArn = item['stageArn'] as string | undefined;
   const activeRecordingId = item['activeRecordingId'] as string | undefined;
   const description = item['description'] as string | undefined;
+  const scheduledDurationMinutes = item['scheduledDurationMinutes'] as number | undefined;
 
   return {
     ...base,
     ...(stageArn !== undefined ? { stageArn } : {}),
     ...(activeRecordingId !== undefined ? { activeRecordingId } : {}),
     ...(description !== undefined ? { description } : {}),
+    ...(scheduledDurationMinutes !== undefined ? { scheduledDurationMinutes } : {}),
   };
 }

@@ -12,10 +12,10 @@ import { NotFoundError } from '@/domain/errors/NotFoundError';
 import {
   assertNoSensitiveTokenFields,
   assertValidCapabilities,
-  assertValidDurationMinutes,
   buildParticipantTokenAttributes,
   buildParticipantTokenUserId,
 } from '@/infrastructure/aws/ivs/participant-token-attributes';
+import { participantTokenDurationMinutes } from '@/application/live/participant-token-duration';
 
 export interface RefreshParticipantTokenInput {
   readonly liveId: string;
@@ -26,31 +26,29 @@ export interface RefreshParticipantTokenResult {
   readonly expiresAt: string;
 }
 
-// Mesma duração de `JoinLiveUseCase`/`PromoteParticipantUseCase` — ver nota lá sobre
-// por que 180min (3h), não o default da API (720min/12h, confirmado na doc oficial
-// da action `CreateParticipantToken`: "Default: 720 (12 hours)").
-const REFRESH_TOKEN_DURATION_MINUTES = 180;
-
 /**
  * `POST /lives/{liveId}/token/refresh` — seção 13 do README, ponto de revisão da
- * Fase 8: o participant token do IVS tem validade limitada (180min, ver acima); uma
- * aula pode durar mais que isso, e o cliente do estúdio (Web Broadcast SDK) precisa
- * renovar o token ANTES de expirar, sem cair a publicação (a troca de token do SDK é
- * transparente para a sessão WebRTC já estabelecida — só a AUTORIZAÇÃO é renovada,
- * a conexão de mídia não é recriada).
+ * Fase 8: o participant token cobre a duração agendada + margem, limitado pelo teto
+ * do ambiente; refresh é exceção para uma aula que estourou o horário. Como estes
+ * tokens vêm de `CreateParticipantToken`,
+ * eles NÃO são aceitos por `Stage.exchangeToken()` (a troca só aceita tokens
+ * autoassinados com key pair). O cliente precisa sair, recriar o `Stage` com este
+ * token reemitido e entrar novamente; isso interrompe brevemente a publicação.
  *
  * Diferente de `PromoteParticipantUseCase`: aqui as capabilities NÃO mudam — é
  * sempre uma reemissão nas MESMAS capabilities que o participante já tinha (nunca
  * eleva PUBLISH sozinho; quem decide isso é `PromoteParticipantUseCase`). Diferente
  * de `DemoteParticipantUseCase`: não desconecta ninguém — é sempre o próprio
  * participante renovando o token que já é seu, não uma ação de moderação sobre
- * outra pessoa.
+ * outra pessoa. A nova emissão recebe um novo `ivsParticipantId`, mas preserva o
+ * `liveParticipantId` estável do domínio.
  */
 export class RefreshParticipantTokenUseCase {
   constructor(
     private readonly liveSessionRepository: LiveSessionRepository,
     private readonly liveParticipantRepository: LiveParticipantRepository,
     private readonly ivsRealTimeService: IvsRealTimeServicePort,
+    private readonly participantTokenMaximumMinutes = 720,
   ) {}
 
   async execute(
@@ -88,7 +86,10 @@ export class RefreshParticipantTokenUseCase {
     }
 
     assertValidCapabilities(participant.capabilities);
-    assertValidDurationMinutes(REFRESH_TOKEN_DURATION_MINUTES);
+    const tokenDurationMinutes = participantTokenDurationMinutes(
+      live,
+      this.participantTokenMaximumMinutes,
+    );
 
     const tokenIdentity = {
       liveParticipantId: participant.liveParticipantId,
@@ -103,7 +104,7 @@ export class RefreshParticipantTokenUseCase {
       userId: tokenUserId,
       attributes: tokenAttributes,
       capabilities: participant.capabilities,
-      durationMinutes: REFRESH_TOKEN_DURATION_MINUTES,
+      durationMinutes: tokenDurationMinutes,
     });
 
     await this.liveParticipantRepository.save({

@@ -20,7 +20,7 @@ function seedClassGroup(
   return classGroup;
 }
 
-describe('UpdateClassGroupUseCase — caso crítico da seção 17: professor editando turma de outra turma', () => {
+describe('UpdateClassGroupUseCase — gerenciar turma é exclusivo de ADMIN', () => {
   it('rejects a professor who does not own the class', async () => {
     const repo = new FakeClassGroupRepository();
     seedClassGroup(repo);
@@ -34,7 +34,7 @@ describe('UpdateClassGroupUseCase — caso crítico da seção 17: professor edi
 
     await expect(
       useCase.execute(context, { classId: 'class-1', name: 'Novo nome' }),
-    ).rejects.toMatchObject({ code: 'CLASS_NOT_OWNED' });
+    ).rejects.toMatchObject({ code: 'ROLE_NOT_ALLOWED' });
   });
 
   it('rejects a user from another institution, even if somehow the same userId owns a class elsewhere', async () => {
@@ -53,7 +53,7 @@ describe('UpdateClassGroupUseCase — caso crítico da seção 17: professor edi
     ).rejects.toMatchObject({ code: 'RESOURCE_NOT_FOUND' });
   });
 
-  it('allows the professor who owns the class', async () => {
+  it('rejects even the professor who owns the class', async () => {
     const repo = new FakeClassGroupRepository();
     seedClassGroup(repo);
     const useCase = new UpdateClassGroupUseCase(repo);
@@ -64,8 +64,9 @@ describe('UpdateClassGroupUseCase — caso crítico da seção 17: professor edi
       institutionId: 'institution-1',
     });
 
-    const updated = await useCase.execute(context, { classId: 'class-1', name: 'Novo nome' });
-    expect(updated.name).toBe('Novo nome');
+    await expect(
+      useCase.execute(context, { classId: 'class-1', name: 'Novo nome' }),
+    ).rejects.toMatchObject({ code: 'ROLE_NOT_ALLOWED' });
   });
 
   it('always allows ADMIN of the same institution, regardless of ownership', async () => {
@@ -96,7 +97,7 @@ describe('UpdateClassGroupUseCase — caso crítico da seção 17: professor edi
 
     await expect(
       useCase.execute(context, { classId: 'class-1', name: 'Novo nome' }),
-    ).rejects.toMatchObject({ code: 'CLASS_NOT_OWNED' });
+    ).rejects.toMatchObject({ code: 'ROLE_NOT_ALLOWED' });
   });
 
   it('raises NotFoundError for a class that does not exist', async () => {

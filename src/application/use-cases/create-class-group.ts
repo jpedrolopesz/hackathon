@@ -15,7 +15,7 @@ export interface CreateClassGroupInput {
   readonly classId: string;
   readonly courseId: string;
   readonly name: string;
-  /** Obrigatório quando quem cria é ADMIN; ignorado (vira o próprio) quando é PROFESSOR. */
+  /** Professor responsável pela turma; somente ADMIN cria turmas. */
   readonly teacherId?: string;
 }
 
@@ -29,7 +29,7 @@ export class CreateClassGroupUseCase {
     context: AuthenticatedRequestContext,
     input: CreateClassGroupInput,
   ): Promise<ClassGroup> {
-    assertRole(context, ['ADMIN', 'PROFESSOR']);
+    assertRole(context, ['ADMIN']);
 
     const course = await this.courseRepository.findById(input.courseId);
     if (!course) {
@@ -41,12 +41,12 @@ export class CreateClassGroupUseCase {
     }
     assertSameInstitution(context, course.institutionId);
 
-    const teacherId = context.role === 'PROFESSOR' ? context.userId : input.teacherId;
+    const teacherId = input.teacherId;
     if (!teacherId) {
       throw new ValidationError(
         'É necessário informar o professor responsável pela turma.',
         'VALIDATION_ERROR',
-        [{ path: 'teacherId', message: 'obrigatório quando quem cria é ADMIN' }],
+        [{ path: 'teacherId', message: 'obrigatório' }],
       );
     }
 

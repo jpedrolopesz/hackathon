@@ -5,7 +5,7 @@ import {
 } from '@aws-sdk/client-cognito-identity-provider';
 
 const client = new CognitoIdentityProviderClient({});
-let cachedSecret: string | undefined;
+const cachedSecrets = new Map<string, string>();
 
 /**
  * O secret do client confidencial do painel nunca é gerado nem lido pelo CDK — fica
@@ -15,6 +15,8 @@ let cachedSecret: string | undefined;
  * `CloudFrontSigningService`.
  */
 export async function getPanelClientSecret(userPoolId: string, clientId: string): Promise<string> {
+  const cacheKey = `${userPoolId}:${clientId}`;
+  const cachedSecret = cachedSecrets.get(cacheKey);
   if (cachedSecret !== undefined) {
     return cachedSecret;
   }
@@ -27,6 +29,6 @@ export async function getPanelClientSecret(userPoolId: string, clientId: string)
     throw new Error(`Cognito client ${clientId} has no ClientSecret.`);
   }
 
-  cachedSecret = secret;
-  return cachedSecret;
+  cachedSecrets.set(cacheKey, secret);
+  return secret;
 }

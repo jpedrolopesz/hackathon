@@ -23,6 +23,8 @@ export interface EnvironmentConfig {
    * limiter em DynamoDB).
    */
   readonly reactionRouteThrottle: { readonly rateLimit: number; readonly burstLimit: number };
+  /** Throttle agregado da HTTP API; a autorização de negócio continua por usuário. */
+  readonly httpApiThrottle: { readonly rateLimit: number; readonly burstLimit: number };
   /**
    * Teto absoluto da validade do cookie assinado de playback (GetRecordingPlaybackUseCase,
    * Fase 7) — a validade real é `duração da gravação + margem`, mas nunca passa
@@ -30,6 +32,8 @@ export interface EnvironmentConfig {
    * 13 (ponto de revisão sobre TTL fixo vs. duração da gravação).
    */
   readonly playbackCookieMaxTtlMinutes: number;
+  /** Teto do participant token; emissão usa duração agendada + margem. */
+  readonly participantTokenMaxDurationMinutes: number;
   /**
    * Retenção de gravações no S3 (seção 14 do README — "política de retenção para
    * mensagens e gravações"). Produção nunca expira objetos automaticamente (só
@@ -55,7 +59,9 @@ const ENVIRONMENT_CONFIGS: Record<EnvironmentName, EnvironmentConfig> = {
     logRetention: RetentionDays.ONE_WEEK,
     chatShardCount: 2,
     reactionRouteThrottle: { rateLimit: 10, burstLimit: 20 },
+    httpApiThrottle: { rateLimit: 50, burstLimit: 100 },
     playbackCookieMaxTtlMinutes: 360,
+    participantTokenMaxDurationMinutes: 360,
     recordingsRetention: {
       transitionToInfrequentAccessAfterDays: 30,
       transitionToGlacierAfterDays: 90,
@@ -70,7 +76,9 @@ const ENVIRONMENT_CONFIGS: Record<EnvironmentName, EnvironmentConfig> = {
     logRetention: RetentionDays.ONE_MONTH,
     chatShardCount: 4,
     reactionRouteThrottle: { rateLimit: 100, burstLimit: 200 },
+    httpApiThrottle: { rateLimit: 250, burstLimit: 500 },
     playbackCookieMaxTtlMinutes: 360,
+    participantTokenMaxDurationMinutes: 720,
     recordingsRetention: {
       transitionToInfrequentAccessAfterDays: 30,
       transitionToGlacierAfterDays: 90,
@@ -85,7 +93,9 @@ const ENVIRONMENT_CONFIGS: Record<EnvironmentName, EnvironmentConfig> = {
     logRetention: RetentionDays.SIX_MONTHS,
     chatShardCount: 16,
     reactionRouteThrottle: { rateLimit: 300, burstLimit: 600 },
+    httpApiThrottle: { rateLimit: 1_000, burstLimit: 2_000 },
     playbackCookieMaxTtlMinutes: 720,
+    participantTokenMaxDurationMinutes: 720,
     recordingsRetention: {
       transitionToInfrequentAccessAfterDays: 90,
       transitionToGlacierAfterDays: 365,

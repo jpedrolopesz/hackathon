@@ -27,6 +27,20 @@ O backend será consumido inicialmente por:
 
 O contrato da API deve ser preparado desde o início para ser facilmente consumido pelo aplicativo SwiftUI.
 
+## Configuração local
+
+Requer Node.js 24+, credenciais AWS de desenvolvimento e Java para os testes com
+DynamoDB Local. Execute `npm install`, copie `.env.example` para `.env.local`,
+preencha os recursos do ambiente e rode `npm run dev`. A API usa Bearer token do
+app client público do Cognito; o painel usa o fluxo Hosted UI/BFF.
+
+Validação completa: `npm run typecheck`, `npm run lint`, `npm test`,
+`npm run test:integration`, `npm run build` e
+`npm run cdk -- synth --context env=development`.
+
+O contrato canônico está em `docs/openapi.yaml`; chamadas executáveis estão em
+`docs/api-examples.http` e a integração mobile em `docs/ios-integration.md`.
+
 ## 2. Objetivo do MVP
 
 O MVP deve oferecer:
@@ -584,6 +598,21 @@ O professor deve conseguir:
 * Publicar ou ocultar o replay.
 
 Não implemente o aplicativo SwiftUI neste momento.
+
+### Primeiro deploy de um ambiente
+
+O callback do Cognito precisa do domínio da distribuição, mas esse domínio só
+existe depois que o CloudFormation cria a distribuição. Por isso, um ambiente
+novo exige obrigatoriamente dois deploys:
+
+1. Execute `npm run cdk -- deploy --all` sem `appDomain`.
+2. Leia o output `AppDistributionDomainName` da stack.
+3. Execute novamente
+   `npm run cdk -- deploy --all --context appDomain=<AppDistributionDomainName>`.
+
+O segundo deploy adiciona ao app client do Cognito as URLs de callback e logout
+do domínio recém-criado. Sem ele, a infraestrutura está ativa, mas o login no
+domínio de produção é recusado pelo Cognito.
 
 Apenas prepare:
 

@@ -1,5 +1,5 @@
 import {
-  assertClassOwner,
+  assertRole,
   assertSameInstitution,
   RESOURCE_NOT_FOUND_CODE,
   RESOURCE_NOT_FOUND_PUBLIC_MESSAGE,
@@ -15,8 +15,8 @@ export interface UpdateClassGroupInput {
 }
 
 /**
- * Caso crítico da seção 17 do README: "professor tentando editar turma de outra
- * turma" — `assertClassOwner` só deixa passar o dono (ou ADMIN).
+ * Gerenciar turmas é permissão de ADMIN (seção 5 do README). Professores editam
+ * lives das próprias disciplinas, não a entidade administrativa da turma.
  */
 export class UpdateClassGroupUseCase {
   constructor(private readonly classGroupRepository: ClassGroupRepository) {}
@@ -35,7 +35,7 @@ export class UpdateClassGroupUseCase {
     }
 
     assertSameInstitution(context, classGroup.institutionId);
-    assertClassOwner(context, classGroup);
+    assertRole(context, ['ADMIN']);
 
     const updated: ClassGroup = { ...classGroup, name: input.name };
     await this.classGroupRepository.save(updated);

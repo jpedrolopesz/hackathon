@@ -1,6 +1,7 @@
 import type { LiveSessionRepository } from '@/application/ports/LiveSessionRepository';
 import type { RecordingEventPatch, RecordingRepository } from '@/application/ports/RecordingRepository';
 import { statusesThatCanTransitionTo } from '@/domain/value-objects/RecordingStatus';
+import { emitMetric } from '@/shared/observability/structured-log';
 
 export type CompositionStateChangeEventName =
   | 'Session Start'
@@ -58,11 +59,14 @@ export class HandleIvsCompositionStateChangeEventUseCase {
           ? { status: 'PROCESSING', endedAt: input.eventTimeIso }
           : { status: 'FAILED', errorMessage: input.reason ?? input.eventName };
 
-    await this.recordingRepository.applyEvent(
+    const result = await this.recordingRepository.applyEvent(
       live.activeRecordingId,
       input.eventTimeIso,
       statusesThatCanTransitionTo(patch.status ?? 'FAILED'),
       patch,
     );
+    if (result === 'applied' && patch.status === 'FAILED') {
+      emitMetric('RecordingFailures');
+    }
   }
 }

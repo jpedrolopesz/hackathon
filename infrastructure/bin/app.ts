@@ -52,6 +52,7 @@ const apiStack = new ApiStack(app, `Api${suffix}`, {
   panelClient: cognitoStack.panelClient,
   mobileClient: cognitoStack.mobileClient,
   userPoolDomain: cognitoStack.userPoolDomain,
+  ...(appDomainName !== undefined ? { appDomainName } : {}),
 });
 
 // Ver nota em stacks/cognito-stack.ts — o domínio real só é conhecido depois deste

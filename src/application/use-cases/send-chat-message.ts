@@ -11,6 +11,7 @@ import { ConflictError } from '@/domain/errors/ConflictError';
 import { ValidationError } from '@/domain/errors/ValidationError';
 import type { ChatMessage } from '@/domain/entities/ChatMessage';
 import { buildEnvelope } from '@/domain/value-objects/RealtimeEnvelope';
+import { emitMetric } from '@/shared/observability/structured-log';
 
 export interface SendChatMessageInput {
   readonly body: string;
@@ -65,6 +66,7 @@ export class SendChatMessageUseCase {
       createdAt: new Date().toISOString(),
     };
     await this.chatMessageRepository.save(message);
+    emitMetric('ChatMessages');
 
     await broadcastToLive(
       this.webSocketConnectionRepository,

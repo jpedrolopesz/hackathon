@@ -4,6 +4,10 @@ import { z } from 'zod';
 export const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   APP_ENV: z.enum(['development', 'staging', 'production']).default('development'),
+  // Origem pública canônica do painel. Em CloudFront -> API Gateway, `request.url`
+  // contém o hostname do origin (`execute-api`), não o domínio visto pelo navegador;
+  // OAuth precisa reutilizar exatamente a callback cadastrada no Cognito.
+  APP_PUBLIC_ORIGIN: z.string().url().optional(),
 
   AWS_REGION: z.string().min(1),
 
@@ -70,6 +74,15 @@ export const envSchema = z.object({
   // Número de shards da partição de chat (PK=LIVE#{liveId}#{shard}) — só as Lambdas
   // que leem/escrevem chat usam isso; default 1 (sem sharding) para as demais.
   CHAT_SHARD_COUNT: z.coerce.number().int().positive().default(1),
+
+  // Teto por ambiente. A emissão real usa duração agendada da aula + 30min,
+  // limitada por este valor e pelo máximo absoluto do IVS.
+  IVS_PARTICIPANT_TOKEN_MAX_DURATION_MINUTES: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(20_160)
+    .default(720),
 
   // Teto absoluto do cookie assinado de playback (GetRecordingPlaybackUseCase, Fase
   // 7) — a validade real é `duração da gravação + margem`, nunca passa disto (ver

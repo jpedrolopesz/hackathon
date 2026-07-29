@@ -1,0 +1,21 @@
+{
+  "DynamoDb-development": {
+    "ExportsOutputFnGetAttCoreTable97EB8292Arn0DE736BD": "arn:aws:dynamodb:us-east-1:847566517340:table/DynamoDb-development-CoreTable97EB8292-BS5XPZR925PI",
+    "ExportsOutputRefCoreTable97EB8292DFE1E6FC": "DynamoDb-development-CoreTable97EB8292-BS5XPZR925PI"
+  },
+  "Cognito-development": {
+    "ExportsOutputFnGetAttUserPool6BA7E5F2Arn686ACC00": "arn:aws:cognito-idp:us-east-1:847566517340:userpool/us-east-1_JUo3puty8",
+    "ExportsOutputRefUserPoolPanelClient3834F9155A754517": "3p28k5pbnn5tuguei9fg99k4ph",
+    "ExportsOutputRefUserPoolMobileClient046093C2693C6546": "9mm5s46hn3a8r4f3glv4mvg00",
+    "ExportsOutputRefUserPool6BA7E5F296FD7236": "us-east-1_JUo3puty8",
+    "ExportsOutputRefUserPoolHostedUiDomainE021B0B644BA1D58": "vitru-development-live-classes"
+  },
+  "Api-development": {
+    "ExportsOutputRefRecordingsBucketAA52F4997539F77B": "api-development-recordingsbucketaa52f499-ojbkjpedzgxu",
+    "AppDistributionDomainName": "d2tdadn4gc7c6n.cloudfront.net"
+  },
+  "Ivs-development": {
+    "ExportsOutputFnGetAttCompositeStorageConfigurationArn15766441": "arn:aws:ivs:us-east-1:847566517340:storage-configuration/jILvE1zImZg6",
+    "ExportsOutputFnGetAttCompositeEncoderConfigurationArn9B8EA4B7": "arn:aws:ivs:us-east-1:847566517340:encoder-configuration/GisghvdWB1zt"
+  }
+}

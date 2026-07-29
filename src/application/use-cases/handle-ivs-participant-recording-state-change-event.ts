@@ -1,6 +1,7 @@
 import type { LiveSessionRepository } from '@/application/ports/LiveSessionRepository';
 import type { RecordingEventPatch, RecordingRepository } from '@/application/ports/RecordingRepository';
 import { statusesThatCanTransitionTo } from '@/domain/value-objects/RecordingStatus';
+import { emitMetric } from '@/shared/observability/structured-log';
 
 export type ParticipantRecordingStateChangeEventName =
   | 'Recording Start'
@@ -81,6 +82,11 @@ export class HandleIvsParticipantRecordingStateChangeEventUseCase {
     );
 
     if (result === 'applied') {
+      if (input.eventName === 'Recording End' && input.recordingDurationMs !== undefined) {
+        emitMetric('RecordingProcessingDuration', input.recordingDurationMs, 'Milliseconds');
+      } else if (input.eventName !== 'Recording End') {
+        emitMetric('RecordingFailures');
+      }
       await this.liveSessionRepository.clearActiveRecording(live.liveId, recordingId);
     }
   }

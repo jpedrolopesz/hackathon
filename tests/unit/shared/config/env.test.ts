@@ -41,4 +41,14 @@ describe('envSchema', () => {
     };
     expect(envSchema.safeParse(withRawKey).success).toBe(false);
   });
+
+  it('accepts only an absolute URL as the optional public origin', () => {
+    expect(
+      envSchema.safeParse({ ...validEnv, APP_PUBLIC_ORIGIN: 'https://app.example.com' })
+        .success,
+    ).toBe(true);
+    expect(envSchema.safeParse({ ...validEnv, APP_PUBLIC_ORIGIN: '/relative' }).success).toBe(
+      false,
+    );
+  });
 });

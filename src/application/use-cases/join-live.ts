@@ -19,11 +19,12 @@ import type { LiveSession } from '@/domain/entities/LiveSession';
 import {
   assertNoSensitiveTokenFields,
   assertValidCapabilities,
-  assertValidDurationMinutes,
   buildParticipantTokenAttributes,
   buildParticipantTokenUserId,
   IVS_TOKEN_CAPABILITIES_BY_ROLE,
 } from '@/infrastructure/aws/ivs/participant-token-attributes';
+import { participantTokenDurationMinutes } from '@/application/live/participant-token-duration';
+import { emitMetric } from '@/shared/observability/structured-log';
 
 export interface JoinLiveInput {
   readonly liveId: string;
@@ -43,11 +44,6 @@ export interface JoinLiveResult {
   };
 }
 
-// Curto de propósito: não é o default da API (720min/12h — tempo demais para uma
-// única aula) nem um valor arbitrário. Cobre qualquer aula real com folga e reduz a
-// janela de exposição de um token PUBLISH em caso de reemissão (ver DemoteParticipant).
-const JOIN_TOKEN_DURATION_MINUTES = 180;
-
 /**
  * As seis verificações da seção 6 do README, na ordem exata (docs/fase-1-
  * arquitetura.md, seção 3). `capabilities` é sempre montado explicitamente — nunca
@@ -60,6 +56,7 @@ export class JoinLiveUseCase {
     private readonly liveParticipantRepository: LiveParticipantRepository,
     private readonly ivsRealTimeService: IvsRealTimeServicePort,
     private readonly connectionTicketRepository: ConnectionTicketRepository,
+    private readonly participantTokenMaximumMinutes = 720,
   ) {}
 
   async execute(
@@ -129,7 +126,10 @@ export class JoinLiveUseCase {
         ? IVS_TOKEN_CAPABILITIES_BY_ROLE.PRESENTER
         : IVS_TOKEN_CAPABILITIES_BY_ROLE.SUBSCRIBER_ONLY;
     assertValidCapabilities(capabilities);
-    assertValidDurationMinutes(JOIN_TOKEN_DURATION_MINUTES);
+    const tokenDurationMinutes = participantTokenDurationMinutes(
+      live,
+      this.participantTokenMaximumMinutes,
+    );
 
     const liveParticipantId = existingParticipant?.liveParticipantId ?? randomUUID();
     const tokenIdentity = { liveParticipantId, role: context.role };
@@ -142,8 +142,9 @@ export class JoinLiveUseCase {
       userId: tokenUserId,
       attributes: tokenAttributes,
       capabilities,
-      durationMinutes: JOIN_TOKEN_DURATION_MINUTES,
+      durationMinutes: tokenDurationMinutes,
     });
+    emitMetric('ParticipantTokensCreated');
 
     const now = new Date().toISOString();
     const participant: LiveParticipant = {
@@ -159,6 +160,7 @@ export class JoinLiveUseCase {
         : {}),
     };
     await this.liveParticipantRepository.save(participant);
+    emitMetric('ParticipantsJoined', 1, 'Count', { Role: context.role });
 
     // Ticket de conexão do WebSocket (seção 11 do README, `realtime.connectionToken`)
     // — nunca o access token do Cognito na URL (revisão de segurança pós-Fase-6,

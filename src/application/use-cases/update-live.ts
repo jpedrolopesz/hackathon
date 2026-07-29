@@ -8,6 +8,7 @@ import type { AuthenticatedRequestContext } from '@/application/authorization/Au
 import type { LiveSessionRepository } from '@/application/ports/LiveSessionRepository';
 import { ConflictError } from '@/domain/errors/ConflictError';
 import { NotFoundError } from '@/domain/errors/NotFoundError';
+import { ValidationError } from '@/domain/errors/ValidationError';
 import type { LiveSession } from '@/domain/entities/LiveSession';
 
 export interface UpdateLiveInput {
@@ -15,6 +16,7 @@ export interface UpdateLiveInput {
   readonly title: string;
   readonly description?: string;
   readonly scheduledStartAt: string;
+  readonly scheduledDurationMinutes?: number;
 }
 
 /**
@@ -32,6 +34,17 @@ export class UpdateLiveUseCase {
   constructor(private readonly liveSessionRepository: LiveSessionRepository) {}
 
   async execute(context: AuthenticatedRequestContext, input: UpdateLiveInput): Promise<LiveSession> {
+    if (
+      input.scheduledDurationMinutes !== undefined &&
+      (!Number.isInteger(input.scheduledDurationMinutes) ||
+        input.scheduledDurationMinutes < 15 ||
+        input.scheduledDurationMinutes > 20_130)
+    ) {
+      throw new ValidationError(
+        'A duração agendada deve ficar entre 15 e 20130 minutos.',
+        'LIVE_DURATION_INVALID',
+      );
+    }
     const live = await this.liveSessionRepository.findById(input.liveId);
     if (!live) {
       throw new NotFoundError(
@@ -56,6 +69,9 @@ export class UpdateLiveUseCase {
       title: input.title,
       ...(input.description !== undefined ? { description: input.description } : {}),
       scheduledStartAt: input.scheduledStartAt,
+      ...(input.scheduledDurationMinutes !== undefined
+        ? { scheduledDurationMinutes: input.scheduledDurationMinutes }
+        : {}),
     });
 
     const updated = await this.liveSessionRepository.findById(input.liveId);

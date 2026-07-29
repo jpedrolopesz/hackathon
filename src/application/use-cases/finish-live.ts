@@ -9,6 +9,7 @@ import type { IvsRealTimeServicePort } from '@/application/ports/IvsRealTimeServ
 import type { LiveSessionRepository } from '@/application/ports/LiveSessionRepository';
 import { NotFoundError } from '@/domain/errors/NotFoundError';
 import type { LiveSession } from '@/domain/entities/LiveSession';
+import { emitMetric } from '@/shared/observability/structured-log';
 
 /**
  * `LIVE` -> `ENDING` -> `ENDED`. `DeleteStage` (seção 9 do README/docs) limpa o
@@ -52,6 +53,7 @@ export class FinishLiveUseCase {
     }
 
     await this.liveSessionRepository.transitionStatus(liveId, 'ENDING', 'ENDED');
+    emitMetric('LivesEnded');
 
     const updated = await this.liveSessionRepository.findById(liveId);
     if (!updated) {

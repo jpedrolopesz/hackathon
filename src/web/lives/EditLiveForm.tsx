@@ -11,6 +11,7 @@ export function EditLiveForm({ live }: { live: LiveSession }) {
       title: String(formData.get('title')),
       ...(description ? { description: String(description) } : {}),
       scheduledStartAt: new Date(String(formData.get('scheduledStartAt'))).toISOString(),
+      scheduledDurationMinutes: Number(formData.get('scheduledDurationMinutes')),
     });
   }, {});
 
@@ -23,6 +24,19 @@ export function EditLiveForm({ live }: { live: LiveSession }) {
           defaultValue={live.title}
           required
           maxLength={200}
+          className="rounded-md border border-black/10 px-2 py-1 dark:border-white/15 dark:bg-transparent"
+        />
+      </label>
+
+      <label className="flex flex-col gap-1 text-sm">
+        Duração planejada (minutos)
+        <input
+          type="number"
+          name="scheduledDurationMinutes"
+          min={15}
+          max={20130}
+          defaultValue={live.scheduledDurationMinutes ?? 120}
+          required
           className="rounded-md border border-black/10 px-2 py-1 dark:border-white/15 dark:bg-transparent"
         />
       </label>

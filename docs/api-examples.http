@@ -1,0 +1,47 @@
+@baseUrl = http://localhost:3000
+@accessToken = replace-with-cognito-access-token
+@courseId = replace
+@classId = replace
+@liveId = replace
+
+### Perfil — sucesso usa { data, meta }
+GET {{baseUrl}}/api/v1/me
+Authorization: Bearer {{accessToken}}
+X-Correlation-Id: local-smoke-1
+
+### Criar curso — mutação acumulativa exige chave
+POST {{baseUrl}}/api/v1/courses
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+Idempotency-Key: course-demo-001
+
+{"name":"Engenharia de Software","code":"ES-2026"}
+
+### Listar com cursor opaco
+GET {{baseUrl}}/api/v1/courses?limit=20&cursor={{cursor}}
+Authorization: Bearer {{accessToken}}
+
+### Agendar live
+POST {{baseUrl}}/api/v1/classes/{{classId}}/lives
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+Idempotency-Key: live-demo-001
+
+{"title":"Arquitetura Serverless","scheduledStartAt":"2026-08-01T22:00:00.000Z","scheduledDurationMinutes":200}
+
+### Entrar — deliberadamente sem Idempotency-Key; sempre emite credenciais novas
+POST {{baseUrl}}/api/v1/lives/{{liveId}}/join
+Authorization: Bearer {{accessToken}}
+
+### Renovar token IVS — também sem Idempotency-Key
+POST {{baseUrl}}/api/v1/lives/{{liveId}}/token/refresh
+Authorization: Bearer {{accessToken}}
+
+### Ticket WebSocket — também sem Idempotency-Key
+POST {{baseUrl}}/api/v1/lives/{{liveId}}/realtime/ticket
+Authorization: Bearer {{accessToken}}
+
+### Encerrar live
+POST {{baseUrl}}/api/v1/lives/{{liveId}}/finish
+Authorization: Bearer {{accessToken}}
+Idempotency-Key: finish-demo-001

@@ -45,12 +45,15 @@ Equivalente nativo do que o painel web faz com `amazon-ivs-web-broadcast`
 2. Criar uma `IVSStage` (Broadcast SDK for iOS) com esse token, implementar
    `IVSStageStrategy` (mesmos três métodos do SDK web: quais streams publicar,
    se publica, se assina participantes remotos).
-3. **Renovação de token, sem derrubar a publicação**: chamar
+3. O token inicial cobre a duração agendada + 30min, limitado pelo teto do
+   ambiente. **Renovação é fallback para aula que estourou esse horário**: chamar
    `POST /api/v1/lives/{liveId}/token/refresh` ANTES de `expiresAt` (o SDK web
-   usa uma margem de 10min — replique isso) e aplicar o novo token via o
-   mecanismo de troca de token do SDK iOS (equivalente ao `exchangeToken` do SDK
-   web — consulte a referência do IVS Broadcast SDK for iOS para o nome exato
-   do método na versão em uso; o CONTRATO do lado do servidor é o mesmo).
+   usa uma margem de 10min — replique isso), sair do stage atual, recriar o
+   `IVSStage` e entrar novamente. Não use o mecanismo de troca de token do SDK
+   iOS (equivalente ao `exchangeToken` do SDK web): a documentação oficial limita
+   essa troca a tokens autoassinados por key pair, e os nossos são emitidos pela
+   API `CreateParticipantToken`. Mostre ao professor que a publicação será
+   interrompida por instantes durante a reconexão.
 4. Teste de câmera/microfone: usar `AVCaptureSession` para preview local ANTES de
    chamar `stage.join()` — mesma ideia do preview via `getUserMedia` no painel
    web, só a API nativa muda.

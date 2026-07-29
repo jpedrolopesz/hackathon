@@ -1,6 +1,6 @@
 import * as path from 'node:path';
 import { Duration, Fn, RemovalPolicy, Stack } from 'aws-cdk-lib';
-import { AccessLogField, AccessLogFormat } from 'aws-cdk-lib/aws-apigateway';
+import { AccessLogField, AccessLogFormat, CfnAccount } from 'aws-cdk-lib/aws-apigateway';
 import * as apigwv2 from 'aws-cdk-lib/aws-apigatewayv2';
 import {
   HttpUserPoolAuthorizer,
@@ -11,6 +11,7 @@ import {
   WebSocketLambdaIntegration,
 } from 'aws-cdk-lib/aws-apigatewayv2-integrations';
 import * as cloudfront from 'aws-cdk-lib/aws-cloudfront';
+import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
 import * as origins from 'aws-cdk-lib/aws-cloudfront-origins';
 import type * as cognito from 'aws-cdk-lib/aws-cognito';
 import type * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
@@ -35,6 +36,7 @@ export interface ApiStackProps extends PlatformStackProps {
   // classe `UserPoolDomain`, não na interface — o domínio é sempre construído em
   // `CognitoStack`, então não há necessidade de importar por ARN aqui.
   readonly userPoolDomain: cognito.UserPoolDomain;
+  readonly appDomainName?: string;
 }
 
 /**
@@ -182,13 +184,24 @@ export class ApiStack extends Stack {
     // corpo da mensagem. Isso é cinto e suspensório: mesmo o connectionToken (60s, uso
     // único) não deveria aparecer em log nenhum.
     //
-    // Diferente de REST API (v1), HTTP/WebSocket API (v2) não usa a conta-a-conta
-    // `cloudWatchRoleArn` — API Gateway v2 entrega os logs via o mecanismo gerenciado
-    // de "Log Delivery" da AWS (confirmado na doc de logging de HTTP API: a lista de
-    // permissões ali, `logs:CreateLogDelivery`/`PutResourcePolicy`/etc., é do
-    // principal que FAZ O DEPLOY, não algo que este stack precisa provisionar).
-    // Prerequisito operacional, não uma lacuna de código: quem faz `cdk deploy`
-    // precisa dessas permissões na própria conta.
+    // A configuração regional `cloudWatchRoleArn` do API Gateway é requisito real
+    // também para access logging da WebSocket API v2. O primeiro deploy contra uma
+    // conta nova falhou ao criar a Stage enquanto este valor estava ausente, embora o
+    // synth aceitasse o template. A configuração é singleton por conta/região; fica
+    // na mesma stack que a Stage e a dependência explícita evita a corrida entre os
+    // dois resources durante o primeiro deploy.
+    const apiGatewayCloudWatchRole = new iam.Role(this, 'ApiGatewayCloudWatchRole', {
+      assumedBy: new iam.ServicePrincipal('apigateway.amazonaws.com'),
+      managedPolicies: [
+        iam.ManagedPolicy.fromAwsManagedPolicyName(
+          'service-role/AmazonAPIGatewayPushToCloudWatchLogs',
+        ),
+      ],
+    });
+    const apiGatewayAccount = new CfnAccount(this, 'ApiGatewayAccount', {
+      cloudWatchRoleArn: apiGatewayCloudWatchRole.roleArn,
+    });
+
     const webSocketAccessLogGroup = new logs.LogGroup(this, 'RealtimeApiAccessLogs', {
       retention: props.config.logRetention,
       removalPolicy: props.config.removalPolicy,
@@ -221,6 +234,7 @@ export class ApiStack extends Stack {
     // ser ligado aqui.
     const webSocketCfnStage = this.webSocketStage.node.defaultChild as apigwv2.CfnStage;
     webSocketCfnStage.defaultRouteSettings = { dataTraceEnabled: false };
+    webSocketCfnStage.addResourceDependency(apiGatewayAccount);
 
     const nextServerFunction = new lambda.Function(this, 'NextServerFunction', {
       runtime: lambda.Runtime.NODEJS_24_X,
@@ -230,10 +244,14 @@ export class ApiStack extends Stack {
       ),
       memorySize: 1024,
       timeout: Duration.seconds(29),
+      tracing: lambda.Tracing.ACTIVE,
       logRetention: props.config.logRetention,
       environment: {
         NODE_ENV: 'production',
         APP_ENV: props.config.envName,
+        ...(props.appDomainName !== undefined
+          ? { APP_PUBLIC_ORIGIN: `https://${props.appDomainName}` }
+          : {}),
         COGNITO_USER_POOL_ID: props.userPool.userPoolId,
         COGNITO_CLIENT_ID: props.panelClient.userPoolClientId,
         // Emissor real dos tokens (id_token/access_token) — formato fixo da AWS,
@@ -265,9 +283,17 @@ export class ApiStack extends Stack {
         // usada só server-side).
         WEBSOCKET_CLIENT_URL: `wss://${this.webSocketApi.apiId}.execute-api.${this.region}.amazonaws.com/${props.config.envName}`,
         LOG_LEVEL: props.config.envName === 'production' ? 'info' : 'debug',
-        CORS_ALLOWED_ORIGINS: '*',
+        CORS_ALLOWED_ORIGINS:
+          props.config.envName === 'development'
+            ? 'http://localhost:3000'
+            : props.appDomainName !== undefined
+              ? `https://${props.appDomainName}`
+              : '',
         CHAT_SHARD_COUNT: String(props.config.chatShardCount),
         PLAYBACK_COOKIE_MAX_TTL_MINUTES: String(props.config.playbackCookieMaxTtlMinutes),
+        IVS_PARTICIPANT_TOKEN_MAX_DURATION_MINUTES: String(
+          props.config.participantTokenMaxDurationMinutes,
+        ),
       },
     });
     // Sem CLOUDFRONT_DOMAIN_NAME aqui de propósito — ver nota "ponto de revisão"
@@ -286,8 +312,10 @@ export class ApiStack extends Stack {
     // Troca do `code` do OAuth por tokens (app/api/auth/callback) precisa autenticar
     // com o Cognito como client confidencial — a única forma de ler o secret sem
     // colocá-lo em CloudFormation/env var é buscá-lo em runtime. O serviço Cognito
-    // Identity Provider só define ARN a nível de USER POOL (não existe um ARN por
-    // client) — por isso o Resource é o pool, não o client.
+    // Identity Provider só define ARN a nível de USER POOL (não existe ARN nem
+    // condition key IAM por app client) — portanto não é possível escopar esta
+    // action ao client específico na policy. O menor escopo suportado pela AWS é o
+    // pool; em runtime, o código chama apenas o COGNITO_CLIENT_ID fixo desta stack.
     nextServerFunction.addToRolePolicy(
       new iam.PolicyStatement({
         sid: 'CognitoDescribePanelClient',
@@ -296,6 +324,31 @@ export class ApiStack extends Stack {
       }),
     );
     sessionSecret.grantRead(nextServerFunction);
+
+    new cloudwatch.Alarm(this, 'NextServerErrorsAlarm', {
+      metric: nextServerFunction.metricErrors(),
+      threshold: 1,
+      evaluationPeriods: 1,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    });
+    new cloudwatch.Alarm(this, 'NextServerThrottlesAlarm', {
+      metric: nextServerFunction.metricThrottles(),
+      threshold: 1,
+      evaluationPeriods: 1,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    });
+    new cloudwatch.Alarm(this, 'DynamoDbReadThrottlesAlarm', {
+      metric: props.table.metric('ReadThrottleEvents', { statistic: 'sum' }),
+      threshold: 1,
+      evaluationPeriods: 1,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    });
+    new cloudwatch.Alarm(this, 'DynamoDbWriteThrottlesAlarm', {
+      metric: props.table.metric('WriteThrottleEvents', { statistic: 'sum' }),
+      threshold: 1,
+      evaluationPeriods: 1,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    });
 
     // Confirmado na Service Authorization Reference (list_amazoninteractivevideoservice):
     // todas estas ações exigem resource type "stage" — Resource "*" da versão anterior
@@ -344,7 +397,39 @@ export class ApiStack extends Stack {
 
     this.httpApi = new apigwv2.HttpApi(this, 'HttpApi', {
       defaultIntegration: nextServerIntegration,
+      corsPreflight: {
+        allowOrigins:
+          props.config.envName === 'development'
+            ? ['http://localhost:3000']
+            : props.appDomainName !== undefined
+              ? [`https://${props.appDomainName}`]
+              : [],
+        allowHeaders: [
+          'authorization',
+          'content-type',
+          'idempotency-key',
+          'x-correlation-id',
+        ],
+        allowMethods: [
+          apigwv2.CorsHttpMethod.GET,
+          apigwv2.CorsHttpMethod.POST,
+          apigwv2.CorsHttpMethod.PATCH,
+          apigwv2.CorsHttpMethod.DELETE,
+          apigwv2.CorsHttpMethod.OPTIONS,
+        ],
+        maxAge: Duration.hours(1),
+      },
     });
+    const httpCfnStage = this.httpApi.defaultStage?.node.defaultChild as
+      | apigwv2.CfnStage
+      | undefined;
+    if (httpCfnStage) {
+      httpCfnStage.defaultRouteSettings = {
+        detailedMetricsEnabled: true,
+        throttlingRateLimit: props.config.httpApiThrottle.rateLimit,
+        throttlingBurstLimit: props.config.httpApiThrottle.burstLimit,
+      };
+    }
 
     // Ponto de revisão (Fase 8): JWT authorizer só em `/api/v1/*` — nunca no
     // `defaultIntegration`/`{proxy+}` acima, que serve as PÁGINAS do painel. Um
@@ -478,6 +563,7 @@ function handler(event) {
         runtime: lambda.Runtime.NODEJS_24_X,
         logRetention: props.config.logRetention,
         timeout: Duration.seconds(10),
+        tracing: lambda.Tracing.ACTIVE,
         environment: {
           DYNAMODB_TABLE_NAME: props.table.tableName,
         },
@@ -490,6 +576,7 @@ function handler(event) {
       runtime: lambda.Runtime.NODEJS_24_X,
       logRetention: props.config.logRetention,
       timeout: Duration.seconds(10),
+      tracing: lambda.Tracing.ACTIVE,
       environment: { DYNAMODB_TABLE_NAME: props.table.tableName },
     });
 
@@ -502,6 +589,7 @@ function handler(event) {
       runtime: lambda.Runtime.NODEJS_24_X,
       logRetention: props.config.logRetention,
       timeout: Duration.seconds(10),
+      tracing: lambda.Tracing.ACTIVE,
       environment: { DYNAMODB_TABLE_NAME: props.table.tableName },
     });
 
@@ -511,6 +599,7 @@ function handler(event) {
       runtime: lambda.Runtime.NODEJS_24_X,
       logRetention: props.config.logRetention,
       timeout: Duration.seconds(10),
+      tracing: lambda.Tracing.ACTIVE,
       environment: {
         DYNAMODB_TABLE_NAME: props.table.tableName,
         CHAT_SHARD_COUNT: String(props.config.chatShardCount),
@@ -555,7 +644,6 @@ function handler(event) {
       'live.leave',
       'chat.send',
       'chat.delete',
-      'reaction.send',
       'question.send',
       'question.answer',
       'question.highlight',
@@ -579,6 +667,12 @@ function handler(event) {
         integration: new WebSocketLambdaIntegration(`${routeKey}Integration`, defaultHandler),
       });
     }
+    const reactionRoute = this.webSocketApi.addRoute('reaction.send', {
+      integration: new WebSocketLambdaIntegration(
+        'reaction.sendIntegration',
+        defaultHandler,
+      ),
+    });
 
     // Reação não usa mais o rate limiter em DynamoDB (revisão de ponto de revisão —
     // cada reação era uma escrita, o oposto do que a Fase 1 tinha decidido). A
@@ -586,11 +680,20 @@ function handler(event) {
     // AGREGADO da rota inteira, não por aluno (docs/fase-1-arquitetura.md, seção
     // 10.7): protege o backend de um pico, mas não impede sozinho um usuário
     // individual de consumir mais do que a parte que lhe cabia do orçamento.
-    webSocketCfnStage.routeSettings = {
+    // `CfnStage.routeSettings` é tipado pelo CDK como um mapa de
+    // `RouteSettingsProperty`, mas o serializer da versão atual não converte os
+    // campos internos desse mapa para PascalCase. O synth anterior gerou
+    // `throttlingBurstLimit`/`throttlingRateLimit`, que o provider real do API
+    // Gateway rejeitou embora CloudFormation/CDK aceitassem o template. O override
+    // explícito preserva os nomes exatos exigidos pelo resource provider.
+    webSocketCfnStage.addOverride('Properties.RouteSettings', {
       'reaction.send': {
-        throttlingRateLimit: props.config.reactionRouteThrottle.rateLimit,
-        throttlingBurstLimit: props.config.reactionRouteThrottle.burstLimit,
+        ThrottlingRateLimit: props.config.reactionRouteThrottle.rateLimit,
+        ThrottlingBurstLimit: props.config.reactionRouteThrottle.burstLimit,
       },
-    };
+    });
+    webSocketCfnStage.addResourceDependency(
+      reactionRoute.node.defaultChild as apigwv2.CfnRoute,
+    );
   }
 }
