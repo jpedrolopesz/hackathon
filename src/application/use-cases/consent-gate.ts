@@ -6,7 +6,7 @@ import type {
 import type { AssertRecordingConsentUseCase } from '@/application/use-cases/assert-recording-consent';
 import { structuredLog } from '@/shared/observability/structured-log';
 
-export interface ConsentGateInput extends AssertRecordingConsentInput {}
+export type ConsentGateInput = AssertRecordingConsentInput;
 
 export async function consentGate(
   assertRecordingConsent: AssertRecordingConsentUseCase,
