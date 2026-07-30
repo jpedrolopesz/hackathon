@@ -1,16 +1,13 @@
 import type { AuthenticatedRequestContext } from '@/application/authorization/AuthenticatedRequestContext';
 import { assertSameInstitution } from '@/application/authorization/guards';
 import type { RecordingConsentRepository } from '@/application/ports/RecordingConsentRepository';
+import {
+  evaluateRecordingConsent,
+  type RecordingConsentEvaluation,
+} from '@/domain/services/evaluate-recording-consent';
 
-export type RecordingConsentDeniedReason =
-  | 'NO_CONSENT'
-  | 'REVOKED'
-  | 'EXPIRED'
-  | 'NOT_YET_VALID';
-
-export type RecordingConsentResult =
-  | { readonly allowed: true; readonly consentRef: string }
-  | { readonly allowed: false; readonly reason: RecordingConsentDeniedReason };
+export type { RecordingConsentDeniedReason } from '@/domain/services/evaluate-recording-consent';
+export type RecordingConsentResult = RecordingConsentEvaluation;
 
 export interface AssertRecordingConsentInput {
   readonly institutionId: string;
@@ -39,19 +36,6 @@ export class AssertRecordingConsentUseCase {
       input.atInstant,
     );
 
-    if (!consent) {
-      return { allowed: false, reason: 'NO_CONSENT' };
-    }
-    if (consent.status === 'REVOKED' || consent.revokedAt !== null) {
-      return { allowed: false, reason: 'REVOKED' };
-    }
-    if (consent.status === 'EXPIRED' || consent.validUntil < input.atInstant) {
-      return { allowed: false, reason: 'EXPIRED' };
-    }
-    if (consent.validFrom > input.atInstant) {
-      return { allowed: false, reason: 'NOT_YET_VALID' };
-    }
-
-    return { allowed: true, consentRef: consent.id };
+    return evaluateRecordingConsent(consent, input.atInstant);
   }
 }
