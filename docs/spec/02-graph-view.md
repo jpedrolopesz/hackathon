@@ -49,10 +49,13 @@ O nó de material representa uma fonte oficial utilizada no RAG.
 
 ### Nó de dúvida
 
-O nó de dúvida representa uma dúvida detectada a partir de transcrição consentida.
+O nó de dúvida não é um item institucional. Ele é projetado em tempo de leitura a partir do item `DetectedQuestion` persistido na partição individual, conforme ADR-009.
+
+`GraphNode` cobre exclusivamente os tipos `CONCEPT`, `MODULE` e `MATERIAL`. O tipo `DOUBT` existe apenas no contrato de resposta do endpoint.
 
 - `nodeId`
 - `detectedQuestionId`
+- `userId`
 - `disciplineId`
 - `institutionId`
 - `type: DOUBT`
@@ -65,7 +68,9 @@ O nó de dúvida representa uma dúvida detectada a partir de transcrição cons
 - **Pré-requisito:** liga um conceito ao conceito requerido para sua compreensão.
 - **Pertence-a-módulo:** liga um conceito ao módulo institucional correspondente.
 - **Cobre-conceito:** liga um material oficial ao conceito que ele aborda.
-- **Dúvida-sobre:** liga um nó de dúvida ao conceito relacionado.
+- **Dúvida-sobre:** liga um nó de dúvida ao conceito relacionado. Ela não é um item `GraphEdge` institucional e é projetada em tempo de leitura a partir das evidências de origem `TRANSCRIPT` da partição individual.
+
+Em uma evidência de origem `TRANSCRIPT`, o campo `sourceRef` contém o `detectedQuestionId` que originou a evidência. Esse valor permite projetar a aresta `DOUBT_ABOUT` que liga o nó de dúvida ao conceito indicado por `conceptId`.
 
 Cada aresta contém identificador, `disciplineId`, `institutionId`, origem, destino, tipo e natureza factual ou inferida.
 
@@ -89,11 +94,13 @@ Os estados descrevem conceitos, nunca pessoas.
 | `NEEDS_REVIEW` | Evidências anteriores justificam uma revisão do conceito. | Precisa de revisão |
 | `LIKELY_UNDERSTOOD` | Um conjunto de evidências compatíveis sustenta a hipótese auditável de compreensão do conceito. | Provavelmente compreendido |
 
-Os limiares de transição são `PENDENTE (D12)`. A regra terá forma determinística e versionada, combinará tipos de evidência e relações de pré-requisito, recalculará somente os conceitos afetados e produzirá uma explicação legível. Nenhuma transição para `LIKELY_UNDERSTOOD` decorrerá de evidência única ou de mero acesso a material.
+As transições seguem as regras determinísticas e versionadas de `state-rules/v1`, conforme ADR-008. O recálculo permanece restrito aos conceitos afetados e produz uma explicação legível. Nenhuma transição para `LIKELY_UNDERSTOOD` decorre de evidência única ou de mero acesso a material.
 
 ## LearningEvidence
 
 `LearningEvidence` registra a base factual usada pelo state engine. As origens previstas são transcrição, atividade e acesso. Uma evidência derivada de transcrição possui `consentRef` obrigatório, associado ao consentimento vigente que autorizou sua criação.
+
+Uma evidência de origem `ACTIVITY` pode registrar `result?: 'CORRECT' | 'INCORRECT'`, conforme ADR-006. Esse campo descreve a resposta observada e nunca um atributo da pessoa.
 
 O acesso a um material representa somente um fato de acesso. Esse fato nunca indica domínio por si só e não autoriza uma conclusão isolada sobre compreensão.
 
@@ -108,7 +115,7 @@ Proposta de itens institucionais:
 | Item | PK | SK |
 |---|---|---|
 | Discipline | `DISC#{disciplineId}` | `METADATA` |
-| GraphNode | `DISC#{disciplineId}` | `NODE#{nodeType}#{nodeId}` |
+| GraphNode (`CONCEPT`, `MODULE` e `MATERIAL`) | `DISC#{disciplineId}` | `NODE#{nodeType}#{nodeId}` |
 | GraphEdge | `DISC#{disciplineId}` | `EDGE#{edgeType}#{fromNodeId}#{toNodeId}` |
 | Material | `DISC#{disciplineId}` | `MATERIAL#{materialId}` |
 
@@ -120,7 +127,7 @@ Os estados e as evidências individuais ficam em uma partição orientada ao usu
 | LearningEvidence | `USER#{userId}#DISC#{disciplineId}` | `EVIDENCE#{conceptId}#{evidenceId}` |
 | DetectedQuestion vinculada | `USER#{userId}#DISC#{disciplineId}` | `DOUBT#{detectedQuestionId}` |
 
-O endpoint realiza uma `Query` na partição institucional para nós, arestas e materiais e uma `Query` na partição individual para estados, evidências necessárias e dúvidas. Não há `Scan`. Os GSIs existentes somente recebem projeções adicionais se a validação demonstrar necessidade para padrões de acesso secundários; o endpoint principal não depende deles para ultrapassar o limite de 2 Queries.
+O endpoint realiza uma `Query` na partição institucional para conceitos, módulos, materiais e suas arestas e uma `Query` na partição individual para estados, evidências e dúvidas. O nó `DOUBT` e as arestas `DOUBT_ABOUT` são projetados a partir do resultado da `Query` individual. Não há `Scan`. Os GSIs existentes somente recebem projeções adicionais se a validação demonstrar necessidade para padrões de acesso secundários; o endpoint principal permanece limitado a 2 Queries.
 
 ## Contrato ilustrativo do endpoint
 
