@@ -6,6 +6,7 @@ describe('DetectedQuestion', () => {
     const question: DetectedQuestion = {
       id: 'question-media-mediana',
       institutionId: 'institution-fictional',
+      userId: 'user-fictional',
       transcriptId: 'transcript-statistics',
       disciplineId: 'discipline-statistics',
       segmentIds: ['segment-question'],
@@ -15,6 +16,7 @@ describe('DetectedQuestion', () => {
     };
 
     expect(question.segmentIds).toEqual(['segment-question']);
+    expect(question.userId).toBe('user-fictional');
     expect(question.consentRef).toBe('consent-fictional');
   });
 });

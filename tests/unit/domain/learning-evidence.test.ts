@@ -36,6 +36,26 @@ describe('LearningEvidence', () => {
     expect(access.origin).toBe('ACCESS');
   });
 
+  it('represents an incorrect observed activity result', () => {
+    const evidence: LearningEvidence = {
+      ...baseEvidence,
+      origin: 'ACTIVITY',
+      result: 'INCORRECT',
+    };
+
+    expect(evidence.result).toBe('INCORRECT');
+  });
+
+  it('represents a correct observed activity result', () => {
+    const evidence: LearningEvidence = {
+      ...baseEvidence,
+      origin: 'ACTIVITY',
+      result: 'CORRECT',
+    };
+
+    expect(evidence.result).toBe('CORRECT');
+  });
+
   it('rejects transcript evidence without consentRef at compile time', () => {
     // @ts-expect-error TRANSCRIPT requires the consent that authorized the derived datum.
     const evidence: LearningEvidence = { ...baseEvidence, origin: 'TRANSCRIPT' };

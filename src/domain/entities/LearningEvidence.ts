@@ -15,6 +15,7 @@ export interface TranscriptLearningEvidence extends LearningEvidenceBase {
 
 export interface ActivityLearningEvidence extends LearningEvidenceBase {
   readonly origin: 'ACTIVITY';
+  readonly result?: 'CORRECT' | 'INCORRECT';
 }
 
 export interface AccessLearningEvidence extends LearningEvidenceBase {
