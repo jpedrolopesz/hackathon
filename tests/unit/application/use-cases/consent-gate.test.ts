@@ -6,7 +6,12 @@ import type { RecordingConsent } from '@/domain/entities/RecordingConsent';
 
 class FakeRecordingConsentRepository implements RecordingConsentRepository {
   consent: RecordingConsent | null = null;
+  saved: RecordingConsent[] = [];
   calls = 0;
+
+  async save(consent: RecordingConsent): Promise<void> {
+    this.saved.push(consent);
+  }
 
   async findActiveConsent(): Promise<RecordingConsent | null> {
     this.calls += 1;
