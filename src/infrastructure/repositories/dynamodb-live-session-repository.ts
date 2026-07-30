@@ -1,4 +1,3 @@
-import 'server-only';
 import { GetCommand, PutCommand, QueryCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
 import type { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
 import { ConflictError } from '@/domain/errors/ConflictError';

@@ -1,4 +1,3 @@
-import 'server-only';
 import { GetCommand, PutCommand } from '@aws-sdk/lib-dynamodb';
 import type { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
 import type { UserProfileRepository } from '@/application/ports/UserProfileRepository';

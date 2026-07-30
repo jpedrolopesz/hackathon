@@ -1,4 +1,3 @@
-import 'server-only';
 import { DeleteCommand, PutCommand, QueryCommand } from '@aws-sdk/lib-dynamodb';
 import type { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
 import type { WebSocketConnectionRepository } from '@/application/ports/WebSocketConnectionRepository';

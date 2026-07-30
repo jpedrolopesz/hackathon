@@ -362,7 +362,9 @@ export class ApiStack extends Stack {
     nextServerFunction.addToRolePolicy(
       new iam.PolicyStatement({
         sid: 'IvsCreateStage',
-        actions: ['ivs:CreateStage'],
+        // Quando `CreateStage` recebe `tags`, o IVS também autoriza implicitamente
+        // `TagResource` na mesma requisição. Sem ambas, a criação falha atomicamente.
+        actions: ['ivs:CreateStage', 'ivs:TagResource'],
         resources: [stageResourceArn],
         // RequestTag (não ResourceTag): a stage ainda não existe no momento da chamada.
         // Força toda stage criada por esta Lambda a nascer tagueada com o ambiente —
@@ -519,7 +521,14 @@ function handler(event) {
     this.appDistribution = new cloudfront.Distribution(this, 'AppDistribution', {
       comment: `Painel web + /api/v1 + playback de gravações (${props.config.envName})`,
       defaultBehavior: {
-        origin: new origins.HttpOrigin(Fn.select(2, Fn.split('/', this.httpApi.apiEndpoint))),
+        origin: new origins.HttpOrigin(Fn.select(2, Fn.split('/', this.httpApi.apiEndpoint)), {
+          // O HttpApi substitui `Host` pelo domínio execute-api. Sem preservar o host
+          // público, o Next rejeita toda Server Action porque compara `Origin` com
+          // `X-Forwarded-Host` como proteção CSRF.
+          ...(props.appDomainName !== undefined
+            ? { customHeaders: { 'X-Forwarded-Host': props.appDomainName } }
+            : {}),
+        }),
         viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
         cachePolicy: cloudfront.CachePolicy.CACHING_DISABLED,
         originRequestPolicy: cloudfront.OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER,

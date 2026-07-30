@@ -1,4 +1,3 @@
-import 'server-only';
 import type { EventBridgeEvent, EventBridgeHandler } from 'aws-lambda';
 import { HandleIvsCompositionStateChangeEventUseCase } from '@/application/use-cases/handle-ivs-composition-state-change-event';
 import type { CompositionStateChangeEventName } from '@/application/use-cases/handle-ivs-composition-state-change-event';

@@ -1,4 +1,3 @@
-import 'server-only';
 import { QueryCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
 import type { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
 import type { AttendanceRepository } from '@/application/ports/AttendanceRepository';

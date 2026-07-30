@@ -7,6 +7,8 @@ import {
   SubscribeType,
   StageEvents,
   type StageStrategy,
+  type StageParticipantInfo,
+  type StageStream,
 } from 'amazon-ivs-web-broadcast';
 import type { ChatMessage } from '@/domain/entities/ChatMessage';
 import type { LiveParticipant } from '@/domain/entities/LiveParticipant';
@@ -14,6 +16,7 @@ import type { Poll } from '@/domain/entities/Poll';
 import type { Question } from '@/domain/entities/Question';
 import type { RealtimeEnvelope } from '@/web/realtime/use-live-connection';
 import { useLiveConnection } from '@/web/realtime/use-live-connection';
+import { RemoteVideoTiles } from './RemoteVideoTiles';
 
 interface JoinResponseData {
   readonly ivs: { readonly participantToken: string; readonly expiresAt: string };
@@ -62,6 +65,7 @@ export function StudioClient({
   const [chatDraft, setChatDraft] = useState('');
   const [pollQuestion, setPollQuestion] = useState('');
   const [pollOptions, setPollOptions] = useState<readonly string[]>(['', '']);
+  const [remoteStreams, setRemoteStreams] = useState<Readonly<Record<string, MediaStream>>>({});
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const stageRef = useRef<Stage | null>(null);
@@ -73,6 +77,31 @@ export function StudioClient({
   const updatePhase = useCallback((nextPhase: Phase) => {
     phaseRef.current = nextPhase;
     setPhase(nextPhase);
+  }, []);
+
+  const configureStage = useCallback((stage: Stage) => {
+    stage.on(StageEvents.ERROR, (error: unknown) => {
+      console.error('IVS Stage error', error);
+    });
+    stage.on(
+      StageEvents.STAGE_PARTICIPANT_STREAMS_ADDED,
+      (participant: StageParticipantInfo, streams: StageStream[]) => {
+        setRemoteStreams((current) => ({
+          ...current,
+          [participant.id]: new MediaStream(streams.map((stream) => stream.mediaStreamTrack)),
+        }));
+      },
+    );
+    stage.on(
+      StageEvents.STAGE_PARTICIPANT_STREAMS_REMOVED,
+      (participant: StageParticipantInfo) => {
+        setRemoteStreams((current) =>
+          Object.fromEntries(
+            Object.entries(current).filter(([participantId]) => participantId !== participant.id),
+          ),
+        );
+      },
+    );
   }, []);
 
   const onMessage = useCallback((envelope: RealtimeEnvelope) => {
@@ -177,9 +206,7 @@ export function StudioClient({
             }
 
             const replacement = new Stage(body.data.participantToken, strategy);
-            replacement.on(StageEvents.ERROR, (error: unknown) => {
-              console.error('IVS Stage error', error);
-            });
+            configureStage(replacement);
 
             try {
               // CreateParticipantToken não é compatível com exchangeToken. Sair e
@@ -211,7 +238,7 @@ export function StudioClient({
       }
       run(expiresAt);
     },
-    [liveId, updatePhase],
+    [configureStage, liveId, updatePhase],
   );
 
   useEffect(() => {
@@ -258,9 +285,7 @@ export function StudioClient({
         strategyRef.current = strategy;
 
         const stage = new Stage(body.data.ivs.participantToken, strategy);
-        stage.on(StageEvents.ERROR, (error: unknown) => {
-          console.error('IVS Stage error', error);
-        });
+        configureStage(stage);
         stageRef.current = stage;
         updatePhase('preview');
       } catch (error) {
@@ -278,7 +303,7 @@ export function StudioClient({
       stageRef.current?.leave();
       for (const track of mediaStreamRef.current?.getTracks() ?? []) track.stop();
     };
-  }, [liveId, scheduleTokenRefresh, updatePhase]);
+  }, [configureStage, liveId, scheduleTokenRefresh, updatePhase]);
 
   async function enterStage(): Promise<void> {
     await stageRef.current?.join();
@@ -361,6 +386,11 @@ export function StudioClient({
           </ul>
         </section>
       </div>
+
+      <section>
+        <h2 className="mb-3 text-sm font-semibold">Vídeos dos participantes</h2>
+        <RemoteVideoTiles streams={remoteStreams} />
+      </section>
 
       <div className="grid gap-6 lg:grid-cols-3">
         <section className="rounded-md border border-black/10 p-3 dark:border-white/15">

@@ -122,7 +122,7 @@ export class JoinLiveUseCase {
 
     // 6. Capabilities — mapeamento fixo da seção 6, sempre explícito.
     const capabilities =
-      isOwner || isPromoted
+      isOwner || context.role === 'ALUNO' || isPromoted
         ? IVS_TOKEN_CAPABILITIES_BY_ROLE.PRESENTER
         : IVS_TOKEN_CAPABILITIES_BY_ROLE.SUBSCRIBER_ONLY;
     assertValidCapabilities(capabilities);

@@ -118,7 +118,7 @@ describe('JoinLiveUseCase — as seis verificações da seção 6', () => {
     });
   });
 
-  it('5/6. an enrolled student gets SUBSCRIBE-only capabilities', async () => {
+  it('5/6. an enrolled student gets PUBLISH+SUBSCRIBE for the interactive classroom', async () => {
     const { useCase, liveSessionRepository, enrollmentRepository, ivs } = makeUseCase();
     seedLive(liveSessionRepository);
     seedActiveEnrollment(enrollmentRepository);
@@ -130,8 +130,8 @@ describe('JoinLiveUseCase — as seis verificações da seção 6', () => {
     });
     const result = await useCase.execute(context, { liveId: 'live-1' });
 
-    expect(result.participant.capabilities).toEqual(['SUBSCRIBE']);
-    expect(ivs.createParticipantTokenCalls[0]?.capabilities).toEqual(['SUBSCRIBE']);
+    expect(result.participant.capabilities).toEqual(['PUBLISH', 'SUBSCRIBE']);
+    expect(ivs.createParticipantTokenCalls[0]?.capabilities).toEqual(['PUBLISH', 'SUBSCRIBE']);
   });
 
   it('5/6. the owning professor gets PUBLISH+SUBSCRIBE capabilities', async () => {

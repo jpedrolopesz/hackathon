@@ -1,4 +1,3 @@
-import 'server-only';
 import { GetSecretValueCommand, SecretsManagerClient } from '@aws-sdk/client-secrets-manager';
 import { getSignedCookies } from '@aws-sdk/cloudfront-signer';
 import type {

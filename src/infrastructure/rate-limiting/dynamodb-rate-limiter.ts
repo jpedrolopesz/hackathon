@@ -1,4 +1,3 @@
-import 'server-only';
 import { UpdateCommand } from '@aws-sdk/lib-dynamodb';
 import type { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
 import type { RateLimiter } from '@/application/ports/RateLimiter';

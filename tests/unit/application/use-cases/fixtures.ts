@@ -73,6 +73,10 @@ export class FakeEnrollmentRepository implements EnrollmentRepository {
     return this.store.get(this.key(studentId, classId)) ?? null;
   }
 
+  async listByStudent(studentId: string): Promise<readonly Enrollment[]> {
+    return [...this.store.values()].filter((enrollment) => enrollment.studentId === studentId);
+  }
+
   async save(enrollment: Enrollment): Promise<void> {
     this.store.set(this.key(enrollment.studentId, enrollment.classId), enrollment);
   }

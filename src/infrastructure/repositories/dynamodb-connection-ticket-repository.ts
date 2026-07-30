@@ -1,4 +1,3 @@
-import 'server-only';
 import { PutCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
 import type { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
 import type {

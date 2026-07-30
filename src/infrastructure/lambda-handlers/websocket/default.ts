@@ -1,4 +1,3 @@
-import 'server-only';
 import type { APIGatewayProxyResultV2, APIGatewayProxyWebsocketEventV2 } from 'aws-lambda';
 import type { LiveConnectionContext } from '@/application/realtime/LiveConnectionContext';
 import { AnswerQuestionUseCase } from '@/application/use-cases/answer-question';

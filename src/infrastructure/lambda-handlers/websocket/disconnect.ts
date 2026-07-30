@@ -1,4 +1,3 @@
-import 'server-only';
 import type { APIGatewayProxyResultV2, APIGatewayProxyWebsocketEventV2 } from 'aws-lambda';
 import { DisconnectFromLiveUseCase } from '@/application/use-cases/disconnect-from-live';
 import { broadcastToLive } from '@/application/realtime/broadcast-to-live';

@@ -1,4 +1,3 @@
-import 'server-only';
 import { GetCommand, PutCommand, QueryCommand } from '@aws-sdk/lib-dynamodb';
 import type { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
 import type { ClassGroupRepository } from '@/application/ports/ClassGroupRepository';

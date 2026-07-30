@@ -26,6 +26,7 @@ import { IssueConnectionTicketUseCase } from '@/application/use-cases/issue-conn
 import { JoinLiveUseCase } from '@/application/use-cases/join-live';
 import { ListCourseRecordingsUseCase } from '@/application/use-cases/list-course-recordings';
 import { ListUpcomingLivesForTeacherUseCase } from '@/application/use-cases/list-upcoming-lives-for-teacher';
+import { ListUpcomingLivesForStudentUseCase } from '@/application/use-cases/list-upcoming-lives-for-student';
 import { ProvisionLiveStageUseCase } from '@/application/use-cases/provision-live-stage';
 import { PromoteParticipantUseCase } from '@/application/use-cases/promote-participant';
 import { DemoteParticipantUseCase } from '@/application/use-cases/demote-participant';
@@ -70,6 +71,10 @@ function buildUseCases(repos: ReturnType<typeof buildRepositories>) {
     getUserProfileBySub: new GetUserProfileBySubUseCase(repos.userProfile),
     listUpcomingLivesForTeacher: new ListUpcomingLivesForTeacherUseCase(
       repos.classGroup,
+      repos.liveSession,
+    ),
+    listUpcomingLivesForStudent: new ListUpcomingLivesForStudentUseCase(
+      repos.enrollment,
       repos.liveSession,
     ),
     scheduleLive: new ScheduleLiveUseCase(repos.liveSession, repos.classGroup),

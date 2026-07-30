@@ -166,6 +166,97 @@ Data: 2026-07-29 UTC. Conta `847566517340`, região `us-east-1`, instituição
   `sub=8418a4b8-80e1-70df-fd8c-3f5910e04afd`, sem alterar o ADMIN iCloud.
   Audit ID: `5ab70c14-81bf-4ade-9fa8-4f3bf0b066fb`.
 
+### Dados do smoke professor/aluno
+
+- `joao_professor@hotmail.com`: Cognito
+  `sub=94b844a8-4071-7000-4366-d4a920c22f00`, perfil `PROFESSOR`/`vitru`;
+  audit `3b358ce8-ba90-4be9-b662-5b91b305046d`.
+- `joao_aluno@hotmail.com`: Cognito
+  `sub=84983458-30e1-7077-db73-9f1ff9b7d009`, perfil `ALUNO`/`vitru`;
+  audit `ff96d939-177a-4fa1-b360-e9528adf5d00`.
+- Mensagens do Cognito foram suprimidas porque os endereços são identidades de
+  teste. Ambos começam em `FORCE_CHANGE_PASSWORD`; credenciais temporárias não são
+  registradas neste documento.
+- Curso `01KYQK2GMH5MQ96V0A6NJDKXBD`, `Curso de Teste — Fase 10`.
+- Turma `01KYQK2GMJG5P4X14FC6RAE5SZ`, `Turma de Teste — Fase 10`, vinculada ao
+  professor. A GSI1 foi consultada e retornou a turma.
+- Matrícula do aluno criada com estado `ACTIVE` e validada por leitura consistente.
+- Audits da estrutura: curso `9a09330d-1fd3-413d-94d9-554a98574fd9`, turma
+  `db05941a-3f7e-4ed3-8f91-39ad5e7b87ab`, matrícula
+  `038fcc31-e364-4b39-afb0-4274d5f9871a`.
+
+### Correções do primeiro uso professor/aluno
+
+- Ao criar uma live, o Next recusou a Server Action porque `Origin` era
+  `d2tdadn4gc7c6n.cloudfront.net`, mas `X-Forwarded-Host` chegava como
+  `fplkjua5c0.execute-api.us-east-1.amazonaws.com`. Digest
+  `1386071799@E80`; correlation ID
+  `433f44b9-64ef-45e5-984f-17c1cd025042`.
+- A origem do HttpApi no CloudFront passou a definir
+  `X-Forwarded-Host=d2tdadn4gc7c6n.cloudfront.net`. Isso mantém a proteção CSRF
+  do Next, fazendo os dois cabeçalhos representarem a mesma origem pública.
+- O login de ALUNO era redirecionado para a listagem exclusiva do professor e
+  falhava com `ROLE_NOT_ALLOWED`. Digest `956291345`; correlation IDs
+  `139c1981-40e8-42a0-b858-e45e6a1beddc`,
+  `ec1af1c4-9ad8-432c-86be-85149860795d` e
+  `12a8cfdb-87d9-4cb9-8cbf-545561a96d7c`.
+- Foi criada a listagem de aulas por matrículas ativas do próprio aluno, com
+  isolamento por instituição, e uma sala de aula que entra no IVS somente como
+  subscriber. O aluno não solicita câmera/microfone nem capacidade de publicação;
+  chat, perguntas e voto em enquete permanecem disponíveis.
+- O primeiro diff foi interrompido porque a ausência de `institution=vitru`
+  proporia substituir o domínio do Cognito por `unspecified-development-live-classes`.
+  Nenhum deploy foi executado com esse contexto incorreto. O diff repetido com o
+  contexto correto não mostrou alterações em Cognito ou DynamoDB.
+- Validação local: typecheck, lint, 498 testes unitários, 28 testes de integração,
+  Next build, OpenNext build e CDK synth passaram. O ambiente restrito inicialmente
+  bloqueou as portas do DynamoDB Local e o download das fontes Geist; ambos passaram
+  ao repetir com as permissões necessárias.
+- `Api-development` terminou em `UPDATE_COMPLETE` em 2026-07-29. A página pública
+  `/login` respondeu HTTP 200. Uma consulta adicional pela AWS CLI local não pôde
+  rodar por incompatibilidade da instalação Python 3.14 com `libexpat`; o deploy do
+  CloudFormation já confirmou a atualização da distribuição.
+
+### Primeira tentativa de provisionar o IVS Stage
+
+- Ao entrar no estúdio, `CreateStage` falhou atomicamente com HTTP 403 porque a
+  chamada incluía a tag obrigatória `Environment`, mas a role da Lambda possuía
+  `ivs:CreateStage` sem `ivs:TagResource`. Digest `2428913089`.
+- Lambda correlation IDs: `85e3527c-33cd-42c7-8d71-8d696842bbb0`,
+  `c2d54892-8f32-48b1-8789-5663e26c1685`,
+  `23cb0077-4226-4e9f-afa7-eb258a161cbf` e
+  `1d911da3-e958-4ee1-9cca-794fdac25fdc`. IVS request IDs:
+  `b0724dc5-97be-48b5-af95-820174780426`,
+  `8c2f9ce5-732f-4b2a-93ca-c53b17611bd9`,
+  `11ba5f17-815d-4adb-a62c-dc1eeb9a4fdc` e
+  `894aefc7-64ee-4c36-aa2d-ef803ac3f7f0`.
+- Nenhum Stage foi criado nessas tentativas. A policy de criação passou a autorizar
+  `ivs:CreateStage` e `ivs:TagResource` no mesmo ARN `stage/*`, preservando a
+  condição `aws:RequestTag/Environment=development`.
+
+### Primeiro teste de realtime e vídeo do aluno
+
+- Chat, perguntas e enquetes não funcionavam porque toda conexão WebSocket falhava
+  no `$connect` com HTTP 500. O authorizer autônomo carregava `server-only`, marcador
+  específico do Next que lança uma exceção quando executado fora do ambiente de
+  Server Components.
+- API Gateway request IDs observados: `BSNjdE0tIAMEXIw=`,
+  `BSNk-FJXIAMECvA=`, `BSNtCHItoAMEFNA=` e `BSN9qEY9IAMEr-A=`.
+  Lambda request IDs: `0ae899bb-f732-43b9-880f-d00e901e8d11`,
+  `de3d2c96-7fad-4d44-8231-cd0feeadc6e0`,
+  `42b7d203-625b-4507-bd0d-7f16ba9dec09` e
+  `eeff75fd-f98c-47a2-af02-5ebefbb70d86`.
+- O marcador foi removido da camada `src/infrastructure`, usada tanto pelo Next
+  quanto pelas Lambdas independentes. Um teste de arquitetura agora falha se ele
+  reaparecer nessa camada; os bundles sintetizados também foram inspecionados.
+- Por decisão funcional no smoke, ALUNO matriculado passa a receber
+  `PUBLISH+SUBSCRIBE` dentro da aula. A sala do aluno solicita câmera/microfone,
+  publica os tracks e exibe o professor; o estúdio exibe em mosaico os streams
+  remotos dos alunos. Isso não altera o papel permanente `ALUNO` nem suas permissões
+  administrativas.
+- Validação pré-deploy: typecheck, lint, 499 testes unitários, 28 testes de
+  integração, Next build, OpenNext build e CDK synth passaram.
+
 No development atual, tabela, buckets e secrets são configurados para destruição
 (buckets com `autoDeleteObjects`); portanto podem ser apagados pelo destroy. Em
 production, tabela/buckets/secrets protegidos por `RETAIN` sobrevivem e aparecem

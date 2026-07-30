@@ -1,5 +1,4 @@
-import 'server-only';
-import { GetCommand, PutCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
+import { GetCommand, PutCommand, QueryCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
 import type { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
 import type { EnrollmentRepository } from '@/application/ports/EnrollmentRepository';
 import type { Enrollment } from '@/domain/entities/Enrollment';
@@ -25,6 +24,21 @@ export class DynamoDbEnrollmentRepository implements EnrollmentRepository {
     }
 
     return toEnrollment(result.Item);
+  }
+
+  async listByStudent(studentId: string): Promise<readonly Enrollment[]> {
+    const result = await this.client.send(
+      new QueryCommand({
+        TableName: this.tableName,
+        KeyConditionExpression: 'PK = :pk AND begins_with(SK, :prefix)',
+        ExpressionAttributeValues: {
+          ':pk': `USER#${studentId}`,
+          ':prefix': 'ENROLLMENT#',
+        },
+      }),
+    );
+
+    return (result.Items ?? []).map(toEnrollment);
   }
 
   async save(enrollment: Enrollment): Promise<void> {
