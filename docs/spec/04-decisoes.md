@@ -20,7 +20,7 @@ O LLM e os embeddings utilizam Amazon Bedrock. O acesso ocorre sempre por trás 
 
 ## ADR-004 — Baseline e branch
 
-O worktree foi registrado como baseline antes do trabalho do edu-agent. O baseline corresponde ao commit preexistente `205088a`. O trabalho ocorre na branch `feat/edu-agent`.
+O trabalho ocorre na branch `feat/edu-agent`. O commit `549eed7` foi criado como baseline único de revisão e contém as entregas das Etapas 1–3 ainda não revisadas, tendo como antecessor o commit `205088a`.
 
 ## Restrições de ambiente
 

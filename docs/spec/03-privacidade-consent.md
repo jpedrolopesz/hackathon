@@ -20,7 +20,7 @@ Qualquer detalhe adicional de granularidade, vigência ou efeito sobre dados pre
 
 ## consentRef
 
-Todo `Transcript`, `DetectedQuestion` e `LearningEvidence` derivado de transcrição referencia, por `consentRef`, o `RecordingConsent` vigente que autorizou sua criação. A referência permite demonstrar a finalidade e o estado de autorização associados ao dado.
+Todo `Transcript`, `TranscriptSegment`, `DetectedQuestion` e `LearningEvidence` derivado de transcrição referencia, por `consentRef`, o `RecordingConsent` vigente que autorizou sua criação. A referência permite demonstrar a finalidade e o estado de autorização associados ao dado.
 
 ## Ausência de consentimento
 
