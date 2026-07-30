@@ -5,6 +5,7 @@
 export interface ClassGroup {
   readonly classId: string;
   readonly courseId: string;
+  readonly disciplineId?: string;
   readonly institutionId: string;
   readonly teacherId: string;
   readonly name: string;
