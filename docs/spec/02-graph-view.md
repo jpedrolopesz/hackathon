@@ -65,7 +65,7 @@ O nó de dúvida não é um item institucional. Ele é projetado em tempo de lei
 
 ## Arestas
 
-- **Pré-requisito:** liga um conceito ao conceito requerido para sua compreensão.
+- **Pré-requisito:** parte do conceito que é pré-requisito e aponta para o conceito dependente, que só é bem compreendido após ele.
 - **Pertence-a-módulo:** liga um conceito ao módulo institucional correspondente.
 - **Cobre-conceito:** liga um material oficial ao conceito que ele aborda.
 - **Dúvida-sobre:** liga um nó de dúvida ao conceito relacionado. Ela não é um item `GraphEdge` institucional e é projetada em tempo de leitura a partir das evidências de origem `TRANSCRIPT` da partição individual.
