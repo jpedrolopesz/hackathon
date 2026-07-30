@@ -19,6 +19,7 @@ import {
   LEARNING_STATE_PRESENTATION,
   STATELESS_NODE_COLORS,
 } from '@/web/graph/graph-legend';
+import { GraphNodePanel } from '@/web/graph/GraphNodePanel';
 
 type GraphForceProps = ForceGraphProps<GraphViewNode, GraphViewEdge>;
 
@@ -55,6 +56,7 @@ function getNodeColor(node: GraphViewNode): string {
 
 export function GraphCanvas({ graph }: GraphCanvasProps) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const [selectedNode, setSelectedNode] = useState<GraphViewNode | null>(null);
   const [canvasSize, setCanvasSize] = useState<CanvasSize>({
     width: 0,
     height: 0,
@@ -129,28 +131,44 @@ export function GraphCanvas({ graph }: GraphCanvasProps) {
     >
       <GraphLegend />
       <div
-        ref={containerRef}
         style={{
-          height: 'min(70vh, 720px)',
-          minHeight: 384,
-          overflow: 'hidden',
-          width: '100%',
+          display: 'grid',
+          gap: 16,
+          gridTemplateColumns:
+            'repeat(auto-fit, minmax(min(100%, 320px), 1fr))',
         }}
       >
-        {canvasSize.width > 0 && canvasSize.height > 0 ? (
-          <ForceGraph2D
-            graphData={graphData}
-            height={canvasSize.height}
-            linkLineDash={getLinkLineDash}
-            linkSource="source"
-            linkTarget="target"
-            nodeCanvasObject={drawNodeLabel}
-            nodeCanvasObjectMode={() => 'after'}
-            nodeColor={(node) => getNodeColor(node)}
-            nodeId="id"
-            nodeLabel={(node) => getNodeLabel(node)}
-            nodeVal={(node) => (node.type === 'DOUBT' ? 10 : 5)}
-            width={canvasSize.width}
+        <div
+          ref={containerRef}
+          style={{
+            height: 'min(70vh, 720px)',
+            minHeight: 384,
+            overflow: 'hidden',
+            width: '100%',
+          }}
+        >
+          {canvasSize.width > 0 && canvasSize.height > 0 ? (
+            <ForceGraph2D
+              graphData={graphData}
+              height={canvasSize.height}
+              linkLineDash={getLinkLineDash}
+              linkSource="source"
+              linkTarget="target"
+              nodeCanvasObject={drawNodeLabel}
+              nodeCanvasObjectMode={() => 'after'}
+              nodeColor={(node) => getNodeColor(node)}
+              nodeId="id"
+              nodeLabel={(node) => getNodeLabel(node)}
+              nodeVal={(node) => (node.type === 'DOUBT' ? 10 : 5)}
+              onNodeClick={(node) => setSelectedNode(node)}
+              width={canvasSize.width}
+            />
+          ) : null}
+        </div>
+        {selectedNode ? (
+          <GraphNodePanel
+            node={selectedNode}
+            onClose={() => setSelectedNode(null)}
           />
         ) : null}
       </div>
