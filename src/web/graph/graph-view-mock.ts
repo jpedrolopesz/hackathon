@@ -1,4 +1,4 @@
-// Dados fictícios e ilustrativos; a lista de conceitos é a PROPOSTA D4 ainda não validada, e este arquivo NÃO é seed — o seed pertence à Etapa 4.
+// Dados fictícios e ilustrativos; a lista de conceitos é a PROPOSTA D4 validada, e este arquivo NÃO é seed — o seed pertence à Etapa 4.
 import type { GraphViewEnvelope } from '@/application/read-models/graph-view-contract';
 
 export const graphViewMock = {
