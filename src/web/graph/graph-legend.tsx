@@ -1,5 +1,5 @@
 import type { LearningStateValue } from '@/domain/entities/LearningState';
-import type { GraphViewNode } from '@/web/graph/graph-view-contract';
+import type { GraphViewNode } from '@/application/read-models/graph-view-contract';
 
 interface LearningStatePresentation {
   readonly color: string;

@@ -1,4 +1,4 @@
-import type { GraphViewNode } from '@/web/graph/graph-view-contract';
+import type { GraphViewNode } from '@/application/read-models/graph-view-contract';
 import { LEARNING_STATE_PRESENTATION } from '@/web/graph/graph-legend';
 
 export interface GraphNodePanelProps {

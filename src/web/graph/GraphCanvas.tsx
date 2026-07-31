@@ -13,7 +13,7 @@ import type {
   GraphViewEdge,
   GraphViewEnvelope,
   GraphViewNode,
-} from '@/web/graph/graph-view-contract';
+} from '@/application/read-models/graph-view-contract';
 import {
   GraphLegend,
   LEARNING_STATE_PRESENTATION,

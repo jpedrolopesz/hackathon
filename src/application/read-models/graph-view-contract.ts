@@ -1,4 +1,4 @@
-// Payload de resposta projetado do modelo persistido: nodeId vira id; materialId e detectedQuestionId já estão no id; userId e consentRef são omitidos por minimização.
+// Read-model devolvido pelo caso de uso: a aplicação define o contrato sem depender de src/web; nodeId vira id, e userId/consentRef são omitidos por minimização.
 import type { LearningStateValue } from '@/domain/entities/LearningState';
 
 export type GraphViewNodeType = 'CONCEPT' | 'MODULE' | 'MATERIAL' | 'DOUBT';
