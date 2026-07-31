@@ -1,0 +1,197 @@
+{
+  "discipline": {
+    "id": "discipline-statistics",
+    "name": "Estatística I",
+    "semester": "semestre-ficticio",
+    "courseId": "course-statistics-fictional"
+  },
+  "modules": [
+    {
+      "id": "module-fundamentals",
+      "title": "Fundamentos",
+      "description": "Conceitos fundamentais para organizar e representar dados."
+    },
+    {
+      "id": "module-central-tendency",
+      "title": "Tendência central",
+      "description": "Medidas que representam valores centrais de uma distribuição."
+    },
+    {
+      "id": "module-dispersion",
+      "title": "Dispersão",
+      "description": "Medidas que descrevem a variabilidade dos dados."
+    },
+    {
+      "id": "module-exploratory-analysis",
+      "title": "Análise exploratória",
+      "description": "Recursos para investigar distribuição, forma e associação."
+    }
+  ],
+  "concepts": [
+    {
+      "id": "concept-population-sample",
+      "moduleId": "module-fundamentals",
+      "title": "População e amostra",
+      "description": "Distinção entre o conjunto de interesse e sua parcela observada."
+    },
+    {
+      "id": "concept-variable-types",
+      "moduleId": "module-fundamentals",
+      "title": "Tipos de variáveis",
+      "description": "Classificação de variáveis usadas em uma análise."
+    },
+    {
+      "id": "concept-frequency-tables",
+      "moduleId": "module-fundamentals",
+      "title": "Tabelas de frequência",
+      "description": "Organização das ocorrências de valores ou classes."
+    },
+    {
+      "id": "concept-histogram",
+      "moduleId": "module-fundamentals",
+      "title": "Histograma",
+      "description": "Representação gráfica de uma distribuição de frequências."
+    },
+    {
+      "id": "concept-arithmetic-mean",
+      "moduleId": "module-central-tendency",
+      "title": "Média aritmética",
+      "description": "Soma dos valores dividida pela quantidade de observações."
+    },
+    {
+      "id": "concept-median",
+      "moduleId": "module-central-tendency",
+      "title": "Mediana",
+      "description": "Valor central dos dados após sua ordenação."
+    },
+    {
+      "id": "concept-mode",
+      "moduleId": "module-central-tendency",
+      "title": "Moda",
+      "description": "Valor ou classe de maior frequência."
+    },
+    {
+      "id": "concept-range",
+      "moduleId": "module-dispersion",
+      "title": "Amplitude",
+      "description": "Diferença entre os valores máximo e mínimo."
+    },
+    {
+      "id": "concept-variance",
+      "moduleId": "module-dispersion",
+      "title": "Variância",
+      "description": "Medida quadrática da dispersão em torno da média."
+    },
+    {
+      "id": "concept-standard-deviation",
+      "moduleId": "module-dispersion",
+      "title": "Desvio padrão",
+      "description": "Raiz quadrada da variância na unidade original dos dados."
+    },
+    {
+      "id": "concept-coefficient-variation",
+      "moduleId": "module-dispersion",
+      "title": "Coeficiente de variação",
+      "description": "Medida relativa de dispersão."
+    },
+    {
+      "id": "concept-quartiles-percentiles",
+      "moduleId": "module-exploratory-analysis",
+      "title": "Quartis e percentis",
+      "description": "Pontos que dividem os dados ordenados em proporções."
+    },
+    {
+      "id": "concept-boxplot",
+      "moduleId": "module-exploratory-analysis",
+      "title": "Boxplot",
+      "description": "Representação da distribuição por quartis e extremos."
+    },
+    {
+      "id": "concept-skewness",
+      "moduleId": "module-exploratory-analysis",
+      "title": "Assimetria",
+      "description": "Descrição da falta de simetria de uma distribuição."
+    },
+    {
+      "id": "concept-linear-correlation",
+      "moduleId": "module-exploratory-analysis",
+      "title": "Correlação linear (noção)",
+      "description": "Noção de associação linear entre duas variáveis."
+    }
+  ],
+  "materials": [
+    {
+      "id": "material-central-tendency-handout",
+      "title": "Apostila do capítulo de tendência central",
+      "materialType": "HANDOUT",
+      "sourceRef": "materials-fictional/central-tendency-handout.pdf"
+    },
+    {
+      "id": "material-central-tendency-video",
+      "title": "Videoaula do módulo de tendência central",
+      "materialType": "VIDEO",
+      "sourceRef": "materials-fictional/central-tendency-video"
+    },
+    {
+      "id": "material-exercise-list",
+      "title": "Lista de exercícios de Estatística I",
+      "materialType": "EXERCISE_LIST",
+      "sourceRef": "materials-fictional/statistics-exercise-list.pdf"
+    },
+    {
+      "id": "material-simulated-exam",
+      "title": "Prova simulada de Estatística I",
+      "materialType": "SIMULATED_EXAM",
+      "sourceRef": "materials-fictional/statistics-simulated-exam.pdf"
+    }
+  ],
+  "edges": {
+    "belongsToModule": [
+      { "conceptId": "concept-population-sample", "moduleId": "module-fundamentals" },
+      { "conceptId": "concept-variable-types", "moduleId": "module-fundamentals" },
+      { "conceptId": "concept-frequency-tables", "moduleId": "module-fundamentals" },
+      { "conceptId": "concept-histogram", "moduleId": "module-fundamentals" },
+      { "conceptId": "concept-arithmetic-mean", "moduleId": "module-central-tendency" },
+      { "conceptId": "concept-median", "moduleId": "module-central-tendency" },
+      { "conceptId": "concept-mode", "moduleId": "module-central-tendency" },
+      { "conceptId": "concept-range", "moduleId": "module-dispersion" },
+      { "conceptId": "concept-variance", "moduleId": "module-dispersion" },
+      { "conceptId": "concept-standard-deviation", "moduleId": "module-dispersion" },
+      { "conceptId": "concept-coefficient-variation", "moduleId": "module-dispersion" },
+      { "conceptId": "concept-quartiles-percentiles", "moduleId": "module-exploratory-analysis" },
+      { "conceptId": "concept-boxplot", "moduleId": "module-exploratory-analysis" },
+      { "conceptId": "concept-skewness", "moduleId": "module-exploratory-analysis" },
+      { "conceptId": "concept-linear-correlation", "moduleId": "module-exploratory-analysis" }
+    ],
+    "prerequisites": [
+      { "fromConceptId": "concept-frequency-tables", "toConceptId": "concept-histogram" },
+      { "fromConceptId": "concept-arithmetic-mean", "toConceptId": "concept-variance" },
+      { "fromConceptId": "concept-variance", "toConceptId": "concept-standard-deviation" },
+      { "fromConceptId": "concept-standard-deviation", "toConceptId": "concept-coefficient-variation" },
+      { "fromConceptId": "concept-median", "toConceptId": "concept-quartiles-percentiles" },
+      { "fromConceptId": "concept-quartiles-percentiles", "toConceptId": "concept-boxplot" },
+      { "fromConceptId": "concept-arithmetic-mean", "toConceptId": "concept-skewness" },
+      { "fromConceptId": "concept-median", "toConceptId": "concept-skewness" }
+    ],
+    "coversConcept": [
+      { "materialId": "material-central-tendency-handout", "conceptId": "concept-arithmetic-mean" },
+      { "materialId": "material-central-tendency-handout", "conceptId": "concept-median" },
+      { "materialId": "material-central-tendency-handout", "conceptId": "concept-mode" },
+      { "materialId": "material-central-tendency-video", "conceptId": "concept-arithmetic-mean" },
+      { "materialId": "material-central-tendency-video", "conceptId": "concept-median" },
+      { "materialId": "material-exercise-list", "conceptId": "concept-arithmetic-mean" },
+      { "materialId": "material-exercise-list", "conceptId": "concept-median" },
+      { "materialId": "material-exercise-list", "conceptId": "concept-variance" },
+      { "materialId": "material-exercise-list", "conceptId": "concept-standard-deviation" },
+      { "materialId": "material-exercise-list", "conceptId": "concept-quartiles-percentiles" },
+      { "materialId": "material-exercise-list", "conceptId": "concept-boxplot" },
+      { "materialId": "material-simulated-exam", "conceptId": "concept-arithmetic-mean" },
+      { "materialId": "material-simulated-exam", "conceptId": "concept-median" },
+      { "materialId": "material-simulated-exam", "conceptId": "concept-variance" },
+      { "materialId": "material-simulated-exam", "conceptId": "concept-standard-deviation" },
+      { "materialId": "material-simulated-exam", "conceptId": "concept-quartiles-percentiles" },
+      { "materialId": "material-simulated-exam", "conceptId": "concept-boxplot" },
+      { "materialId": "material-simulated-exam", "conceptId": "concept-skewness" }
+    ]
+  }
+}
